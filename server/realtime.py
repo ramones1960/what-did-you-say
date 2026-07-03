@@ -72,6 +72,19 @@ class RealtimeSession:
             self.language = msg.get("language") or None
             self.vocabulary = (msg.get("vocabulary") or "")[:1000] or None
             self.context = (msg.get("context") or "")[:1000] or None
+        elif msg.get("type") == "pause":
+            # 一時停止: ここまでのバッファを確定させて返す
+            await self._process(force=True)
+            await self.ws.send_json({"type": "paused"})
+        elif msg.get("type") == "resume":
+            # 再開: 停止していた実時間ぶんオフセットを進め、
+            # 時刻タグを録音開始からの実時間に合わせる
+            try:
+                gap = float(msg.get("gap") or 0)
+            except (TypeError, ValueError):
+                gap = 0.0
+            if 0 < gap < 86400:
+                self.offset += gap
         elif msg.get("type") == "stop":
             await self._process(force=True)
             await self.ws.send_json({"type": "done"})

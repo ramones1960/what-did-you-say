@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { LANGUAGES, Segment, downloadText, hms, wsUrl } from "./lib";
 import PromptSettings, { usePromptSettings } from "./PromptSettings";
 
-type Status = "idle" | "connecting" | "recording" | "finishing";
+type Status = "idle" | "connecting" | "recording" | "paused" | "finishing";
 
 export default function Recorder() {
   const [status, setStatus] = useState<Status>("idle");
@@ -16,6 +16,7 @@ export default function Recorder() {
   const ctxRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const timerRef = useRef<number>(0);
+  const pausedAtRef = useRef<number>(0);
   const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -101,6 +102,26 @@ export default function Recorder() {
     }
   }
 
+  function pause() {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    pausedAtRef.current = Date.now();
+    // AudioContext を止めるとマイクからの PCM 送信が止まる
+    ctxRef.current?.suspend().catch(() => {});
+    ws.send(JSON.stringify({ type: "pause" }));
+    setStatus("paused");
+  }
+
+  function resume() {
+    const ws = wsRef.current;
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const gap = (Date.now() - pausedAtRef.current) / 1000;
+    // 停止していた実時間を伝え、再開後の時刻タグを録音開始からの実時間に揃える
+    ws.send(JSON.stringify({ type: "resume", gap }));
+    ctxRef.current?.resume().catch(() => {});
+    setStatus("recording");
+  }
+
   function stop() {
     window.clearInterval(timerRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -138,11 +159,20 @@ export default function Recorder() {
             ● 録音開始
           </button>
         ) : (
-          <button onClick={stop} disabled={status === "finishing"}>
-            {status === "finishing" ? "処理中…" : "■ 停止"}
-          </button>
+          <>
+            {recording && <button onClick={pause}>⏸ 一時停止</button>}
+            {status === "paused" && (
+              <button className="primary" onClick={resume}>
+                ▶ 再開
+              </button>
+            )}
+            <button onClick={stop} disabled={status === "finishing"}>
+              {status === "finishing" ? "処理中…" : "■ 停止"}
+            </button>
+          </>
         )}
         {recording && <span className="rec-indicator">録音中 {hms(elapsed)}</span>}
+        {status === "paused" && <span className="muted">一時停止中 {hms(elapsed)}</span>}
         {status === "connecting" && <span className="muted">接続中…</span>}
         <span className="spacer" />
         <button
