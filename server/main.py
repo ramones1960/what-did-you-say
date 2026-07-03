@@ -159,6 +159,37 @@ async def export_job(
     )
 
 
+# --- 用語リスト・コンテキストのプリセット ---
+
+@app.get("/api/presets")
+async def list_presets(user: auth.User = Depends(auth.get_current_user)) -> list:
+    return db.list_presets()
+
+
+@app.post("/api/presets")
+async def save_preset(
+    name: str = Body(...),
+    vocabulary: str = Body(""),
+    context: str = Body(""),
+    user: auth.User = Depends(auth.get_current_user),
+) -> dict:
+    name = name.strip()
+    if not name or len(name) > 100:
+        raise HTTPException(400, "プリセット名は1〜100文字で入力してください")
+    if len(vocabulary) > MAX_PROMPT_CHARS or len(context) > MAX_PROMPT_CHARS:
+        raise HTTPException(400, f"用語リスト・コンテキストは{MAX_PROMPT_CHARS}文字以内にしてください")
+    return db.save_preset(name, vocabulary, context)
+
+
+@app.delete("/api/presets/{preset_id}")
+async def remove_preset(
+    preset_id: str, user: auth.User = Depends(auth.get_current_user)
+) -> dict:
+    if not db.delete_preset(preset_id):
+        raise HTTPException(404, "プリセットが見つかりません")
+    return {"deleted": preset_id}
+
+
 @app.websocket("/ws/realtime")
 async def ws_realtime(ws: WebSocket) -> None:
     await realtime.handle_websocket(ws)

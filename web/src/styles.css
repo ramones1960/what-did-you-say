@@ -331,6 +331,23 @@ button.small,
   font-size: 0.85rem;
 }
 
+/* ---- プリセット ---- */
+.preset-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+
+.preset-bar select {
+  max-width: 220px;
+}
+
+.preset-bar input {
+  width: 180px;
+}
+
 /* ---- 入力欄 ---- */
 .prompt-fields {
   display: grid;

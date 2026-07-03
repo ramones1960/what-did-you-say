@@ -25,6 +25,13 @@ CREATE TABLE IF NOT EXISTS jobs (
     progress    REAL NOT NULL DEFAULT 0, -- 0.0〜1.0
     created_at  REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS presets (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,    -- プリセット名(会議名・案件名など)
+    vocabulary  TEXT NOT NULL DEFAULT '',
+    context     TEXT NOT NULL DEFAULT '',
+    updated_at  REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS segments (
     job_id  TEXT NOT NULL,
     idx     INTEGER NOT NULL,
@@ -152,3 +159,37 @@ def delete_job(job_id: str) -> None:
     with _conn() as conn:
         conn.execute("DELETE FROM segments WHERE job_id = ?", (job_id,))
         conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+
+
+# --- 用語リスト・コンテキストのプリセット ---
+
+def list_presets() -> list[dict[str, Any]]:
+    with _conn() as conn:
+        rows = conn.execute("SELECT * FROM presets ORDER BY name").fetchall()
+        return [dict(r) for r in rows]
+
+
+def save_preset(name: str, vocabulary: str, context: str) -> dict[str, Any]:
+    """同名のプリセットがあれば上書き、なければ新規作成する。"""
+    now = time.time()
+    with _conn() as conn:
+        row = conn.execute("SELECT id FROM presets WHERE name = ?", (name,)).fetchone()
+        preset_id = row["id"] if row else uuid.uuid4().hex
+        conn.execute(
+            "INSERT OR REPLACE INTO presets (id, name, vocabulary, context, updated_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (preset_id, name, vocabulary, context, now),
+        )
+    return {
+        "id": preset_id,
+        "name": name,
+        "vocabulary": vocabulary,
+        "context": context,
+        "updated_at": now,
+    }
+
+
+def delete_preset(preset_id: str) -> bool:
+    with _conn() as conn:
+        cur = conn.execute("DELETE FROM presets WHERE id = ?", (preset_id,))
+        return cur.rowcount > 0
