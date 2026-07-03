@@ -255,7 +255,61 @@ progress {
   resize: vertical;
 }
 
-.prompt-fields .hint {
+.prompt-fields .hint,
+.prompt-settings .hint {
   color: var(--muted);
   font-size: 0.8rem;
+}
+
+/* 話者チップ */
+.spk {
+  display: inline-block;
+  padding: 0 8px;
+  margin-right: 6px;
+  border-radius: 999px;
+  font-size: 0.8em;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.spk-c0 { background: color-mix(in srgb, #2563eb 15%, transparent); color: #2563eb; }
+.spk-c1 { background: color-mix(in srgb, #059669 15%, transparent); color: #059669; }
+.spk-c2 { background: color-mix(in srgb, #d97706 15%, transparent); color: #d97706; }
+.spk-c3 { background: color-mix(in srgb, #dc2626 15%, transparent); color: #dc2626; }
+.spk-c4 { background: color-mix(in srgb, #7c3aed 15%, transparent); color: #7c3aed; }
+.spk-c5 { background: color-mix(in srgb, #0891b2 15%, transparent); color: #0891b2; }
+
+@media (prefers-color-scheme: dark) {
+  .spk-c0 { color: #93b4f8; }
+  .spk-c1 { color: #6ee7b7; }
+  .spk-c2 { color: #fcd34d; }
+  .spk-c3 { color: #fca5a5; }
+  .spk-c4 { color: #c4b5fd; }
+  .spk-c5 { color: #67e8f9; }
+}
+
+/* 話者の氏名入力パネル */
+.speaker-names {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 12px;
+}
+
+.speaker-names label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.9rem;
+}
+
+.speaker-names input {
+  font: inherit;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  width: 140px;
 }

@@ -1,6 +1,16 @@
 import { useEffect, useRef, useState } from "react";
-import { LANGUAGES, Segment, downloadText, hms, wsUrl } from "./lib";
+import {
+  LANGUAGES,
+  Segment,
+  SpeakerNames,
+  downloadText,
+  hms,
+  speakerLabel,
+  uniqueSpeakers,
+  wsUrl,
+} from "./lib";
 import PromptSettings, { usePromptSettings } from "./PromptSettings";
+import SpeakerNamesPanel from "./SpeakerNames";
 
 type Status = "idle" | "connecting" | "recording" | "paused" | "finishing";
 
@@ -11,6 +21,7 @@ export default function Recorder() {
   const [language, setLanguage] = useState("ja");
   const [elapsed, setElapsed] = useState(0);
   const [prompt, setPrompt] = usePromptSettings();
+  const [names, setNames] = useState<SpeakerNames>({});
 
   const wsRef = useRef<WebSocket | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
@@ -179,7 +190,12 @@ export default function Recorder() {
           onClick={() =>
             downloadText(
               "transcript.txt",
-              segments.map((s) => `[${hms(s.start)}] ${s.text}`).join("\n") + "\n",
+              segments
+                .map((s) => {
+                  const label = speakerLabel(s.speaker, names);
+                  return `[${hms(s.start)}] ${label ? `${label}: ` : ""}${s.text}`;
+                })
+                .join("\n") + "\n",
             )
           }
           disabled={segments.length === 0}
@@ -189,6 +205,12 @@ export default function Recorder() {
       </div>
 
       <PromptSettings values={prompt} onChange={setPrompt} disabled={status !== "idle"} />
+
+      <SpeakerNamesPanel
+        speakers={uniqueSpeakers(segments)}
+        names={names}
+        onChange={setNames}
+      />
 
       {error && <p className="error">{error}</p>}
 
@@ -200,7 +222,13 @@ export default function Recorder() {
         )}
         {segments.map((s, i) => (
           <p key={i}>
-            <span className="ts">[{hms(s.start)}]</span> {s.text}
+            <span className="ts">[{hms(s.start)}]</span>
+            {s.speaker != null && (
+              <span className={`spk spk-c${(s.speaker - 1) % 6}`}>
+                {speakerLabel(s.speaker, names)}
+              </span>
+            )}
+            {s.text}
           </p>
         ))}
       </div>

@@ -2,6 +2,26 @@ export interface Segment {
   start: number;
   end: number;
   text: string;
+  speaker?: number | null;
+}
+
+export type SpeakerNames = Record<string, string>;
+
+/** 話者番号を表示名に変換する(氏名未設定なら「話者N」の仮名)。 */
+export function speakerLabel(
+  speaker: number | null | undefined,
+  names: SpeakerNames,
+): string | null {
+  if (speaker == null) return null;
+  const name = names[String(speaker)]?.trim();
+  return name || `話者${speaker}`;
+}
+
+/** セグメント一覧に登場する話者番号(昇順・重複なし)。 */
+export function uniqueSpeakers(segments: Segment[]): number[] {
+  const set = new Set<number>();
+  for (const s of segments) if (s.speaker != null) set.add(s.speaker);
+  return [...set].sort((a, b) => a - b);
 }
 
 export interface Job {
@@ -13,6 +33,7 @@ export interface Job {
   duration: number | null;
   progress: number;
   created_at: number;
+  speaker_names?: string | null;
   segments?: Segment[];
 }
 

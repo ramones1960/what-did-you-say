@@ -1,6 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Job, LANGUAGES, hms } from "./lib";
+import {
+  Job,
+  LANGUAGES,
+  SpeakerNames,
+  hms,
+  speakerLabel,
+  uniqueSpeakers,
+} from "./lib";
 import PromptSettings, { usePromptSettings } from "./PromptSettings";
+import SpeakerNamesPanel from "./SpeakerNames";
 
 export default function Upload() {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -9,6 +17,8 @@ export default function Upload() {
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
   const [prompt, setPrompt] = usePromptSettings();
+  const [names, setNames] = useState<SpeakerNames>({});
+  const [savingNames, setSavingNames] = useState(false);
   const pollRef = useRef(0);
 
   const refreshJobs = useCallback(async () => {
@@ -63,7 +73,29 @@ export default function Upload() {
 
   async function openJob(id: string) {
     const res = await fetch(`/api/jobs/${id}`);
-    if (res.ok) setActive(await res.json());
+    if (!res.ok) return;
+    const job: Job = await res.json();
+    setActive(job);
+    try {
+      setNames(JSON.parse(job.speaker_names || "{}"));
+    } catch {
+      setNames({});
+    }
+  }
+
+  async function saveNames() {
+    if (!active) return;
+    setSavingNames(true);
+    try {
+      const res = await fetch(`/api/jobs/${active.id}/speakers`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ names }),
+      });
+      if (!res.ok) setError("氏名の保存に失敗しました");
+    } finally {
+      setSavingNames(false);
+    }
   }
 
   async function removeJob(id: string) {
@@ -190,10 +222,23 @@ export default function Upload() {
             ))}
           </div>
           {active.status === "error" && <p className="error">{active.error}</p>}
+          <SpeakerNamesPanel
+            speakers={uniqueSpeakers(active.segments ?? [])}
+            names={names}
+            onChange={setNames}
+            onSave={saveNames}
+            saving={savingNames}
+          />
           <div className="transcript">
             {(active.segments ?? []).map((s) => (
               <p key={s.start + s.text}>
-                <span className="ts">[{hms(s.start)}]</span> {s.text}
+                <span className="ts">[{hms(s.start)}]</span>
+                {s.speaker != null && (
+                  <span className={`spk spk-c${(s.speaker - 1) % 6}`}>
+                    {speakerLabel(s.speaker, names)}
+                  </span>
+                )}
+                {s.text}
               </p>
             ))}
             {active.status === "done" && (active.segments ?? []).length === 0 && (

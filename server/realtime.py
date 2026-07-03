@@ -16,7 +16,7 @@ import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 from faster_whisper.vad import VadOptions, get_speech_timestamps
 
-from . import config, transcriber
+from . import config, diarize, transcriber
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +43,7 @@ class RealtimeSession:
         self.vocabulary: str | None = None
         self.context: str | None = None
         self.since_vad = 0.0
+        self.tracker = diarize.SpeakerTracker()
 
     async def run(self) -> None:
         await self.ws.send_json({"type": "ready", "model": config.MODEL_NAME})
@@ -124,12 +125,17 @@ class RealtimeSession:
             )
         )
         for seg in segments:
+            # assign は内部でモデルの遅延ロードを含むためスレッドで実行
+            # (無効時は None が返る)
+            clip = chunk[int(seg.start * SAMPLE_RATE):int(seg.end * SAMPLE_RATE)]
+            speaker = await asyncio.to_thread(self.tracker.assign, clip)
             await self.ws.send_json(
                 {
                     "type": "segment",
                     "start": round(base + seg.start, 2),
                     "end": round(base + seg.end, 2),
                     "text": seg.text,
+                    "speaker": speaker,
                 }
             )
 

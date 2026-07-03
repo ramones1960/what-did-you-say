@@ -8,9 +8,12 @@ Redis キュー + 別プロセスワーカーに差し替える。
 import asyncio
 import logging
 import tempfile
+import wave
 from pathlib import Path
 
-from . import config, db, media, transcriber
+import numpy as np
+
+from . import config, db, diarize, media, transcriber
 
 logger = logging.getLogger(__name__)
 
@@ -69,13 +72,28 @@ def _process_job(job_id: str) -> None:
         duration = media.probe_duration(wav)
         db.set_duration(job_id, duration)
 
+        # 話者分離用に音声全体を読み込む(16kHz mono 16bit WAV)
+        audio: np.ndarray | None = None
+        tracker: diarize.SpeakerTracker | None = None
+        if diarize.available():
+            with wave.open(str(wav), "rb") as wf:
+                raw = wf.readframes(wf.getnframes())
+            audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+            tracker = diarize.SpeakerTracker()
+
         counter = {"idx": 0}
 
         def on_info(language: str, _dur: float) -> None:
             db.set_language(job_id, language)
 
         def on_segment(seg: transcriber.Segment) -> None:
-            db.add_segment(job_id, counter["idx"], seg.start, seg.end, seg.text)
+            speaker = None
+            if tracker is not None and audio is not None:
+                clip = audio[int(seg.start * 16000):int(seg.end * 16000)]
+                speaker = tracker.assign(clip)
+            db.add_segment(
+                job_id, counter["idx"], seg.start, seg.end, seg.text, speaker
+            )
             counter["idx"] += 1
             if duration:
                 db.set_progress(job_id, seg.end / duration)

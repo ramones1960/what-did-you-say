@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     language    TEXT,
     vocabulary  TEXT,                    -- 用語リスト (hotwords)
     context     TEXT,                    -- 前提コンテキスト (initial_prompt)
+    speaker_names TEXT,                  -- 話者番号→氏名の JSON マップ
     duration    REAL,                    -- 音声全体の長さ(秒)
     progress    REAL NOT NULL DEFAULT 0, -- 0.0〜1.0
     created_at  REAL NOT NULL
@@ -30,6 +31,7 @@ CREATE TABLE IF NOT EXISTS segments (
     start   REAL NOT NULL,
     end     REAL NOT NULL,
     text    TEXT NOT NULL,
+    speaker INTEGER,                     -- 話者番号 (1始まり、無効時は NULL)
     PRIMARY KEY (job_id, idx)
 );
 """
@@ -45,10 +47,15 @@ def _conn() -> sqlite3.Connection:
 def init_db() -> None:
     with _conn() as conn:
         conn.executescript(_SCHEMA)
-        # 既存 DB へのカラム追加(v1 からのマイグレーション)
-        for column in ("vocabulary", "context"):
+        # 既存 DB へのカラム追加(過去バージョンからのマイグレーション)
+        for table, column, type_ in (
+            ("jobs", "vocabulary", "TEXT"),
+            ("jobs", "context", "TEXT"),
+            ("jobs", "speaker_names", "TEXT"),
+            ("segments", "speaker", "INTEGER"),
+        ):
             try:
-                conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {type_}")
             except sqlite3.OperationalError:
                 pass  # 既に存在する
 
@@ -95,11 +102,26 @@ def set_progress(job_id: str, progress: float) -> None:
         )
 
 
-def add_segment(job_id: str, idx: int, start: float, end: float, text: str) -> None:
+def add_segment(
+    job_id: str,
+    idx: int,
+    start: float,
+    end: float,
+    text: str,
+    speaker: int | None = None,
+) -> None:
     with _conn() as conn:
         conn.execute(
-            "INSERT OR REPLACE INTO segments (job_id, idx, start, end, text) VALUES (?, ?, ?, ?, ?)",
-            (job_id, idx, start, end, text),
+            "INSERT OR REPLACE INTO segments (job_id, idx, start, end, text, speaker)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (job_id, idx, start, end, text, speaker),
+        )
+
+
+def set_speaker_names(job_id: str, names_json: str) -> None:
+    with _conn() as conn:
+        conn.execute(
+            "UPDATE jobs SET speaker_names = ? WHERE id = ?", (names_json, job_id)
         )
 
 
@@ -112,7 +134,7 @@ def get_job(job_id: str) -> dict[str, Any] | None:
 def get_segments(job_id: str, offset: int = 0) -> list[dict[str, Any]]:
     with _conn() as conn:
         rows = conn.execute(
-            "SELECT idx, start, end, text FROM segments WHERE job_id = ? AND idx >= ? ORDER BY idx",
+            "SELECT idx, start, end, text, speaker FROM segments WHERE job_id = ? AND idx >= ? ORDER BY idx",
             (job_id, offset),
         ).fetchall()
         return [dict(r) for r in rows]

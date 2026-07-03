@@ -1,5 +1,6 @@
 """FastAPI アプリ本体。API とビルド済みフロントエンドの配信を担う。"""
 
+import json
 import logging
 import re
 import urllib.parse
@@ -7,7 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import anyio
-from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile, WebSocket
+from fastapi import Body, Depends, FastAPI, Form, HTTPException, UploadFile, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from . import auth, config, db, exporters, jobs, realtime
@@ -109,6 +110,25 @@ async def remove_job(
     return {"deleted": job_id}
 
 
+@app.put("/api/jobs/{job_id}/speakers")
+async def set_speakers(
+    job_id: str,
+    names: dict[str, str] = Body(embed=True),
+    user: auth.User = Depends(auth.get_current_user),
+) -> dict:
+    """話者番号→氏名のマッピングを保存する(エクスポートに反映される)。"""
+    if db.get_job(job_id) is None:
+        raise HTTPException(404, "ジョブが見つかりません")
+    cleaned = {}
+    for key, value in names.items():
+        if not re.fullmatch(r"\d{1,3}", key) or len(value) > 100:
+            raise HTTPException(400, "話者マッピングが不正です")
+        if value.strip():
+            cleaned[key] = value.strip()
+    db.set_speaker_names(job_id, json.dumps(cleaned, ensure_ascii=False))
+    return {"speaker_names": cleaned}
+
+
 @app.get("/api/jobs/{job_id}/export")
 async def export_job(
     job_id: str,
@@ -123,11 +143,15 @@ async def export_job(
         return JSONResponse({"job": job, "segments": segments})
     if format not in exporters.FORMATS:
         raise HTTPException(400, f"未対応のフォーマットです: {format}")
+    try:
+        names = json.loads(job.get("speaker_names") or "{}")
+    except json.JSONDecodeError:
+        names = {}
     render, media_type, ext = exporters.FORMATS[format]
     stem = Path(job["filename"]).stem or "transcript"
     quoted = urllib.parse.quote(f"{stem}.{ext}")
     return Response(
-        content=render(segments),
+        content=render(segments, names),
         media_type=media_type,
         headers={
             "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"
