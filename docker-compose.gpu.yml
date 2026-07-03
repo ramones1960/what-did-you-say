@@ -1,0 +1,16 @@
+# NVIDIA GPU を使う場合のオーバーレイ。
+# 使い方: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# 前提: WSL2 + NVIDIA ドライバ + NVIDIA Container Toolkit
+services:
+  app:
+    environment:
+      WHISPER_DEVICE: cuda
+      WHISPER_COMPUTE_TYPE: float16
+      WHISPER_MODEL: ${WHISPER_MODEL:-large-v3}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]

@@ -1,0 +1,38 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      WHISPER_MODEL: ${WHISPER_MODEL:-small}
+      WHISPER_DEVICE: ${WHISPER_DEVICE:-auto}
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-auto}
+      JOB_WORKERS: ${JOB_WORKERS:-1}
+      MAX_REALTIME_SESSIONS: ${MAX_REALTIME_SESSIONS:-2}
+    volumes:
+      - app_data:/data
+      - model_cache:/root/.cache/huggingface
+    # ローカル開発用: http://localhost:8000 で直接アクセスできる
+    ports:
+      - "127.0.0.1:8000:8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      # 社内公開時はここをサーバーのホスト名に変える (例: transcribe.example.internal)
+      SITE_ADDRESS: ${SITE_ADDRESS:-localhost}
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  app_data:
+  model_cache:
+  caddy_data:
+  caddy_config:

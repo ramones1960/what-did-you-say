@@ -1,0 +1,11 @@
+# TLS 終端。getUserMedia (マイク) は localhost 以外では HTTPS 必須のため、
+# 社内公開時はこの Caddy 経由でアクセスさせる。
+#
+# - ローカル利用時 (SITE_ADDRESS=localhost): https://localhost で自己署名証明書
+# - 社内公開時: SITE_ADDRESS をホスト名にし、`tls internal` のまま社内CAに
+#   Caddy のルート証明書を配布するか、社内CA発行の証明書を指定する
+
+{$SITE_ADDRESS:localhost} {
+	tls internal
+	reverse_proxy app:8000
+}
