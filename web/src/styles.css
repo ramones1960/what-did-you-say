@@ -200,3 +200,62 @@ table.jobs tbody tr.active {
 progress {
   width: 160px;
 }
+
+.prompt-settings {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+}
+
+.prompt-settings summary {
+  cursor: pointer;
+  color: var(--muted);
+  user-select: none;
+}
+
+.prompt-settings .badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 15%, transparent);
+  color: var(--accent);
+  font-size: 0.8rem;
+}
+
+.prompt-fields {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+  margin-top: 12px;
+}
+
+@media (max-width: 640px) {
+  .prompt-fields {
+    grid-template-columns: 1fr;
+  }
+}
+
+.prompt-fields label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.9rem;
+}
+
+.prompt-fields textarea {
+  font: inherit;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+}
+
+.prompt-fields .hint {
+  color: var(--muted);
+  font-size: 0.8rem;
+}

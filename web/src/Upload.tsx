@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Job, LANGUAGES, hms } from "./lib";
+import PromptSettings, { usePromptSettings } from "./PromptSettings";
 
 export default function Upload() {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -7,6 +8,7 @@ export default function Upload() {
   const [language, setLanguage] = useState("");
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
+  const [prompt, setPrompt] = usePromptSettings();
   const pollRef = useRef(0);
 
   const refreshJobs = useCallback(async () => {
@@ -43,6 +45,8 @@ export default function Upload() {
     setError("");
     const form = new FormData();
     form.append("file", file);
+    form.append("vocabulary", prompt.vocabulary);
+    form.append("context", prompt.context);
     const res = await fetch(`/api/jobs?language=${encodeURIComponent(language)}`, {
       method: "POST",
       body: form,
@@ -106,6 +110,8 @@ export default function Upload() {
           />
         </label>
       </div>
+
+      <PromptSettings values={prompt} onChange={setPrompt} />
 
       <div
         className={`dropzone ${dragging ? "dragging" : ""}`}

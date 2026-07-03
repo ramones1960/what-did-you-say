@@ -81,7 +81,14 @@ def _process_job(job_id: str) -> None:
                 db.set_progress(job_id, seg.end / duration)
 
         try:
-            transcriber.transcribe_file(wav, job["language"], on_segment, on_info)
+            transcriber.transcribe_file(
+                wav,
+                job["language"],
+                on_segment,
+                on_info,
+                vocabulary=job.get("vocabulary"),
+                context=job.get("context"),
+            )
         except Exception as e:
             logger.exception("transcription failed for job %s", job_id)
             db.set_status(job_id, "error", f"文字起こしに失敗しました: {e}")

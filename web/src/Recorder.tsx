@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { LANGUAGES, Segment, downloadText, hms, wsUrl } from "./lib";
+import PromptSettings, { usePromptSettings } from "./PromptSettings";
 
 type Status = "idle" | "connecting" | "recording" | "finishing";
 
@@ -9,6 +10,7 @@ export default function Recorder() {
   const [error, setError] = useState("");
   const [language, setLanguage] = useState("ja");
   const [elapsed, setElapsed] = useState(0);
+  const [prompt, setPrompt] = usePromptSettings();
 
   const wsRef = useRef<WebSocket | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
@@ -67,7 +69,14 @@ export default function Recorder() {
         ws.onopen = () => resolve();
         ws.onclose = () => reject(new Error("接続できませんでした"));
       });
-      ws.send(JSON.stringify({ type: "config", language }));
+      ws.send(
+        JSON.stringify({
+          type: "config",
+          language,
+          vocabulary: prompt.vocabulary,
+          context: prompt.context,
+        }),
+      );
 
       const ctx = new AudioContext();
       ctxRef.current = ctx;
@@ -148,6 +157,8 @@ export default function Recorder() {
           TXT ダウンロード
         </button>
       </div>
+
+      <PromptSettings values={prompt} onChange={setPrompt} disabled={status !== "idle"} />
 
       {error && <p className="error">{error}</p>}
 

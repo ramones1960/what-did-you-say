@@ -40,6 +40,8 @@ class RealtimeSession:
         self.buffer = np.zeros(0, dtype=np.float32)
         self.offset = 0.0  # 消費済み音声の絶対時刻(秒)
         self.language: str | None = None
+        self.vocabulary: str | None = None
+        self.context: str | None = None
         self.since_vad = 0.0
 
     async def run(self) -> None:
@@ -68,6 +70,8 @@ class RealtimeSession:
             return
         if msg.get("type") == "config":
             self.language = msg.get("language") or None
+            self.vocabulary = (msg.get("vocabulary") or "")[:1000] or None
+            self.context = (msg.get("context") or "")[:1000] or None
         elif msg.get("type") == "stop":
             await self._process(force=True)
             await self.ws.send_json({"type": "done"})
@@ -100,7 +104,11 @@ class RealtimeSession:
         base = self.offset
         self._consume(cut)
         segments = await asyncio.to_thread(
-            lambda: list(transcriber.transcribe_pcm(chunk, self.language))
+            lambda: list(
+                transcriber.transcribe_pcm(
+                    chunk, self.language, self.vocabulary, self.context
+                )
+            )
         )
         for seg in segments:
             await self.ws.send_json(

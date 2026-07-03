@@ -43,13 +43,29 @@ class Segment:
         self.text = text
 
 
+def normalize_vocabulary(text: str | None) -> str | None:
+    """改行・カンマ区切りの用語リストを hotwords 用の1行文字列に正規化する。"""
+    if not text:
+        return None
+    terms = [t.strip() for chunk in text.splitlines() for t in chunk.split(",")]
+    terms = [t for t in terms if t]
+    return ", ".join(dict.fromkeys(terms)) or None
+
+
 def transcribe_file(
     path: Path,
     language: str | None,
     on_segment: Callable[[Segment], None],
     on_info: Callable[[str, float], None] | None = None,
+    vocabulary: str | None = None,
+    context: str | None = None,
 ) -> None:
-    """ファイルを文字起こしし、セグメントごとに on_segment を呼ぶ。"""
+    """ファイルを文字起こしし、セグメントごとに on_segment を呼ぶ。
+
+    vocabulary(用語リスト)は hotwords として全ウィンドウの認識を誘導し、
+    context は initial_prompt として冒頭の文脈・文体を与える。
+    どちらもバイアスであり、確実な置換ではない。
+    """
     model = get_model()
     with inference_lock:
         segments, info = model.transcribe(
@@ -57,6 +73,8 @@ def transcribe_file(
             language=language or config.DEFAULT_LANGUAGE,
             vad_filter=True,
             beam_size=5,
+            hotwords=normalize_vocabulary(vocabulary),
+            initial_prompt=context or None,
         )
         if on_info is not None:
             on_info(info.language, info.duration)
@@ -66,7 +84,12 @@ def transcribe_file(
                 on_segment(Segment(seg.start, seg.end, text))
 
 
-def transcribe_pcm(audio: np.ndarray, language: str | None) -> Iterator[Segment]:
+def transcribe_pcm(
+    audio: np.ndarray,
+    language: str | None,
+    vocabulary: str | None = None,
+    context: str | None = None,
+) -> Iterator[Segment]:
     """float32 mono 16kHz の numpy 配列を文字起こしする(リアルタイム用)。"""
     model = get_model()
     with inference_lock:
@@ -75,6 +98,8 @@ def transcribe_pcm(audio: np.ndarray, language: str | None) -> Iterator[Segment]
             language=language or config.DEFAULT_LANGUAGE,
             beam_size=5,
             condition_on_previous_text=False,
+            hotwords=normalize_vocabulary(vocabulary),
+            initial_prompt=context or None,
         )
         for seg in segments:
             text = seg.text.strip()

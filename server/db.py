@@ -18,6 +18,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     status      TEXT NOT NULL,           -- queued / processing / done / error
     error       TEXT,
     language    TEXT,
+    vocabulary  TEXT,                    -- 用語リスト (hotwords)
+    context     TEXT,                    -- 前提コンテキスト (initial_prompt)
     duration    REAL,                    -- 音声全体の長さ(秒)
     progress    REAL NOT NULL DEFAULT 0, -- 0.0〜1.0
     created_at  REAL NOT NULL
@@ -43,14 +45,26 @@ def _conn() -> sqlite3.Connection:
 def init_db() -> None:
     with _conn() as conn:
         conn.executescript(_SCHEMA)
+        # 既存 DB へのカラム追加(v1 からのマイグレーション)
+        for column in ("vocabulary", "context"):
+            try:
+                conn.execute(f"ALTER TABLE jobs ADD COLUMN {column} TEXT")
+            except sqlite3.OperationalError:
+                pass  # 既に存在する
 
 
-def create_job(filename: str, language: str | None) -> str:
+def create_job(
+    filename: str,
+    language: str | None,
+    vocabulary: str | None = None,
+    context: str | None = None,
+) -> str:
     job_id = uuid.uuid4().hex
     with _conn() as conn:
         conn.execute(
-            "INSERT INTO jobs (id, filename, status, language, created_at) VALUES (?, ?, 'queued', ?, ?)",
-            (job_id, filename, language, time.time()),
+            "INSERT INTO jobs (id, filename, status, language, vocabulary, context, created_at)"
+            " VALUES (?, ?, 'queued', ?, ?, ?, ?)",
+            (job_id, filename, language, vocabulary, context, time.time()),
         )
     return job_id
 

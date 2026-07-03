@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import anyio
-from fastapi import Depends, FastAPI, HTTPException, UploadFile, WebSocket
+from fastapi import Depends, FastAPI, Form, HTTPException, UploadFile, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response
 
 from . import auth, config, db, exporters, jobs, realtime
@@ -34,17 +34,29 @@ async def health() -> dict:
     return {"status": "ok", "model": config.MODEL_NAME}
 
 
+MAX_PROMPT_CHARS = 1000
+
+
 @app.post("/api/jobs")
 async def create_job(
     file: UploadFile,
     language: str = "",
+    vocabulary: str = Form(""),
+    context: str = Form(""),
     user: auth.User = Depends(auth.get_current_user),
 ) -> dict:
     lang = language.strip() or None
     if lang and not re.fullmatch(r"[a-z]{2,3}", lang):
         raise HTTPException(400, "言語コードが不正です")
+    if len(vocabulary) > MAX_PROMPT_CHARS or len(context) > MAX_PROMPT_CHARS:
+        raise HTTPException(400, f"用語リスト・コンテキストは{MAX_PROMPT_CHARS}文字以内にしてください")
 
-    job_id = db.create_job(file.filename or "unnamed", lang)
+    job_id = db.create_job(
+        file.filename or "unnamed",
+        lang,
+        vocabulary=vocabulary.strip() or None,
+        context=context.strip() or None,
+    )
     dest = jobs.upload_path(job_id)
     size = 0
     async with await anyio.open_file(dest, "wb") as f:
