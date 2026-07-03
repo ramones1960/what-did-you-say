@@ -1,23 +1,38 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 const MAX_CHARS = 1000;
+const SYNC_EVENT = "wdys-prompt-changed";
 
 export interface PromptValues {
   vocabulary: string;
   context: string;
 }
 
-/** 用語リスト・コンテキストを localStorage に永続化して保持する。 */
-export function usePromptSettings(): [PromptValues, (v: PromptValues) => void] {
-  const [values, setValues] = useState<PromptValues>(() => ({
+function read(): PromptValues {
+  return {
     vocabulary: localStorage.getItem("wdys.vocabulary") ?? "",
     context: localStorage.getItem("wdys.context") ?? "",
-  }));
+  };
+}
+
+/** 用語リスト・コンテキストを localStorage に永続化し、タブ間(両画面)で同期する。 */
+export function usePromptSettings(): [PromptValues, (v: PromptValues) => void] {
+  const [values, setValues] = useState<PromptValues>(read);
+
   useEffect(() => {
-    localStorage.setItem("wdys.vocabulary", values.vocabulary);
-    localStorage.setItem("wdys.context", values.context);
-  }, [values]);
-  return [values, setValues];
+    const sync = () => setValues(read());
+    window.addEventListener(SYNC_EVENT, sync);
+    return () => window.removeEventListener(SYNC_EVENT, sync);
+  }, []);
+
+  const update = useCallback((v: PromptValues) => {
+    localStorage.setItem("wdys.vocabulary", v.vocabulary);
+    localStorage.setItem("wdys.context", v.context);
+    setValues(v);
+    window.dispatchEvent(new Event(SYNC_EVENT));
+  }, []);
+
+  return [values, update];
 }
 
 export default function PromptSettings({

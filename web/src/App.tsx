@@ -25,7 +25,14 @@ export default function App() {
           📁 ファイル
         </button>
       </nav>
-      {tab === "realtime" ? <Recorder /> : <Upload />}
+      {/* タブ切替でアンマウントすると文字起こし結果や録音状態が消えるため、
+          両方マウントしたまま表示だけ切り替える */}
+      <div hidden={tab !== "realtime"}>
+        <Recorder />
+      </div>
+      <div hidden={tab !== "file"}>
+        <Upload />
+      </div>
     </main>
   );
 }
