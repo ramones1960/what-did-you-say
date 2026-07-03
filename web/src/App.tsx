@@ -1,3 +1,10 @@
+/**
+ * アプリのルート。ヘッダー・タブ・フッターのレイアウトを持つ。
+ *
+ * タブは「リアルタイム文字起こし (Recorder)」と「ファイルから文字起こし
+ * (Upload)」の2画面。切替でアンマウントすると文字起こし結果や録音状態が
+ * 消えるため、両方をマウントしたまま hidden 属性で表示だけ切り替える。
+ */
 import { useEffect, useState } from "react";
 import Recorder from "./Recorder";
 import Upload from "./Upload";

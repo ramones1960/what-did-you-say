@@ -1,3 +1,9 @@
+/**
+ * 画面間で共有する型定義とユーティリティ。
+ * サーバー側の対応: Segment/Job は server/db.py の segments/jobs テーブル、
+ * speakerLabel の仕様は server/exporters.py の speaker_label と揃えている。
+ */
+
 export interface Segment {
   start: number;
   end: number;

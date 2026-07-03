@@ -1,4 +1,4 @@
-"""リアルタイム文字起こし(WebSocket)。
+"""リアルタイム文字起こし(WebSocket: /ws/realtime)。
 
 ブラウザから 16kHz mono int16 PCM のバイナリチャンクを受け取り、
 Silero VAD で「発話が途切れた区間」を検出するたびに faster-whisper で
@@ -6,6 +6,29 @@ Silero VAD で「発話が途切れた区間」を検出するたびに faster-w
 
 Whisper 自体はストリーミング非対応のため、この
 「VAD で区切ってチャンク推論」方式を採用している。
+
+## WebSocket プロトコル
+
+クライアント → サーバー:
+- バイナリフレーム: 16kHz mono int16 PCM の音声チャンク
+- テキストフレーム(JSON):
+    {"type": "config", "language": "ja", "vocabulary": "...", "context": "..."}
+        認識設定。最初の音声送信前に送る想定(途中変更も可)
+    {"type": "pause"}   一時停止。ここまでのバッファを確定して返す
+    {"type": "resume", "gap": 秒}
+        再開。gap は一時停止していた実時間で、以降の時刻タグに加算される
+    {"type": "stop"}    終了。残バッファを確定し "done" を返す
+
+サーバー → クライアント(すべて JSON):
+    {"type": "ready", "model": "..."}    接続受理(モデル名つき)
+    {"type": "segment", "start": 1.2, "end": 3.4, "text": "...", "speaker": 1}
+        確定した文字起こし。start/end は録音開始からの実時間(秒)、
+        speaker は話者番号(話者分離が無効なら null)
+    {"type": "paused"}                   pause の完了通知
+    {"type": "done"}                     stop の完了通知(この後クローズ想定)
+    {"type": "error", "message": "..."}  受理拒否など(送信後クローズ)
+
+対応するクライアント実装は web/src/Recorder.tsx。
 """
 
 import asyncio
@@ -35,6 +58,14 @@ _vad_options = VadOptions(min_silence_duration_ms=400, speech_pad_ms=100)
 
 
 class RealtimeSession:
+    """1つの WebSocket 接続に対応する文字起こしセッション。
+
+    音声はいったん self.buffer に溜め、VAD が「発話の終わり」を検出した
+    時点でバッファ先頭からその位置までを切り出して推論する。
+    self.offset は「これまでに切り出し済みの音声の合計時間 + 一時停止時間」
+    で、セグメントの相対時刻に足すことで録音開始からの実時間になる。
+    """
+
     def __init__(self, ws: WebSocket):
         self.ws = ws
         self.buffer = np.zeros(0, dtype=np.float32)
@@ -42,10 +73,11 @@ class RealtimeSession:
         self.language: str | None = None
         self.vocabulary: str | None = None
         self.context: str | None = None
-        self.since_vad = 0.0
+        self.since_vad = 0.0  # 前回 VAD 実行以降に受信した音声量(秒)
         self.tracker = diarize.SpeakerTracker()
 
     async def run(self) -> None:
+        """受信ループ。切断まで音声チャンクと制御メッセージを処理し続ける。"""
         await self.ws.send_json({"type": "ready", "model": config.MODEL_NAME})
         while True:
             message = await self.ws.receive()
@@ -61,10 +93,12 @@ class RealtimeSession:
                 await self._handle_control(text)
 
     def _append_pcm(self, data: bytes) -> None:
+        """int16 PCM のバイト列を float32 (-1.0〜1.0) に変換してバッファへ追加。"""
         pcm = np.frombuffer(data, dtype=np.int16).astype(np.float32) / 32768.0
         self.buffer = np.concatenate([self.buffer, pcm])
 
     async def _handle_control(self, text: str) -> None:
+        """テキストフレーム(JSON 制御メッセージ)を処理する。不正な JSON は無視。"""
         try:
             msg = json.loads(text)
         except json.JSONDecodeError:
@@ -91,6 +125,16 @@ class RealtimeSession:
             await self.ws.send_json({"type": "done"})
 
     async def _process(self, force: bool) -> None:
+        """バッファを調べ、確定できる区間があれば推論してセグメントを送信する。
+
+        force=True(stop/pause 時)はバッファ全体を即座に推論する。
+        force=False は次の順で判定する:
+          1. バッファが MAX_BUFFER_SECONDS を超えた → 長い発話の途中でも全体を推論
+          2. VAD で最後の発話終了後に MIN_TRAILING_SILENCE 以上の無音がある
+             → 発話終了とみなし、そこまでを推論
+          3. 無音のみ → 末尾 0.5 秒だけ残して破棄(次の発話の頭を欠かさないため)
+          4. 発話が続いている → 何もしない(次回の呼び出しで再判定)
+        """
         buf_seconds = len(self.buffer) / SAMPLE_RATE
         if buf_seconds < 0.3:
             return
@@ -140,11 +184,13 @@ class RealtimeSession:
             )
 
     def _consume(self, samples: int) -> None:
+        """バッファ先頭 samples 個を消費済みにし、絶対時刻オフセットを進める。"""
         self.offset += samples / SAMPLE_RATE
         self.buffer = self.buffer[samples:]
 
 
 async def handle_websocket(ws: WebSocket) -> None:
+    """WebSocket 接続の受理・同時セッション数の制限・後始末を行う入口。"""
     global _sessions
     await ws.accept()
 

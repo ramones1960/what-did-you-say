@@ -1,4 +1,13 @@
-"""SQLite によるジョブ・文字起こし結果の永続化。
+"""SQLite によるジョブ・文字起こし結果・プリセットの永続化。
+
+テーブル構成(スキーマは _SCHEMA、詳細は docs/architecture.md):
+  jobs     : ファイル文字起こしのジョブ(状態・進捗・設定・話者氏名)
+  segments : 文字起こし結果のセグメント(時刻・テキスト・話者番号)
+  presets  : 用語リスト・コンテキストの共有プリセット
+
+接続は操作ごとに開閉するシンプルな方式(WAL モード)。書き込み頻度は
+セグメント確定時程度なので、この規模ではコネクションプール等は不要。
+スキーマ変更時は init_db() のマイグレーション(ALTER TABLE)に追記する。
 
 v1 では SQLite で十分。社内公開時に PostgreSQL 等へ載せ替える場合は
 このモジュールのインターフェースを保ったまま実装を差し替える。
@@ -52,6 +61,7 @@ def _conn() -> sqlite3.Connection:
 
 
 def init_db() -> None:
+    """テーブル作成と過去バージョンからのマイグレーションを行う(起動時に呼ぶ)。"""
     with _conn() as conn:
         conn.executescript(_SCHEMA)
         # 既存 DB へのカラム追加(過去バージョンからのマイグレーション)
@@ -73,6 +83,7 @@ def create_job(
     vocabulary: str | None = None,
     context: str | None = None,
 ) -> str:
+    """queued 状態のジョブを作成してジョブ ID を返す。"""
     job_id = uuid.uuid4().hex
     with _conn() as conn:
         conn.execute(
@@ -139,6 +150,7 @@ def get_job(job_id: str) -> dict[str, Any] | None:
 
 
 def get_segments(job_id: str, offset: int = 0) -> list[dict[str, Any]]:
+    """セグメントを idx 順に返す。offset 以降だけ返せるので差分ポーリングに使える。"""
     with _conn() as conn:
         rows = conn.execute(
             "SELECT idx, start, end, text, speaker FROM segments WHERE job_id = ? AND idx >= ? ORDER BY idx",

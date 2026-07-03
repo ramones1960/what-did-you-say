@@ -1,8 +1,19 @@
 """ファイル文字起こしのジョブキューとワーカー。
 
-v1 はインプロセスの asyncio.Queue + ワーカータスク。
-社内公開でスケールさせる場合は、このモジュールを
-Redis キュー + 別プロセスワーカーに差し替える。
+処理の流れ:
+  1. main.py の POST /api/jobs がアップロードを保存し enqueue() する
+  2. ワーカー(asyncio タスク)がキューから取り出し _process_job() を実行
+  3. ffmpeg で 16kHz mono WAV に変換 → faster-whisper で文字起こし
+  4. セグメントは確定するたびに DB へ書き込まれるため、クライアントは
+     GET /api/jobs/{id} のポーリングで途中経過を取得できる
+
+ジョブの状態遷移: queued → processing → done / error
+(進捗はセグメント末尾時刻 / 音声全長で 0.0〜1.0)
+
+v1 はインプロセスの asyncio.Queue + ワーカータスク。プロセス再起動で
+キュー内容は失われる(DB 上は queued のまま残る)。社内公開でスケール
+させる場合は、このモジュールを Redis キュー + 別プロセスワーカーに
+差し替える(インターフェース: enqueue / start_workers / stop_workers)。
 """
 
 import asyncio
@@ -22,19 +33,23 @@ _workers: list[asyncio.Task] = []
 
 
 def upload_path(job_id: str) -> Path:
+    """アップロードされた元ファイルの保存先(ジョブ ID がファイル名)。"""
     return config.UPLOAD_DIR / job_id
 
 
 async def enqueue(job_id: str) -> None:
+    """ジョブをキューに積む。DB 上のジョブは作成済みであること。"""
     await _queue.put(job_id)
 
 
 def start_workers() -> None:
+    """JOB_WORKERS 個のワーカータスクを起動する(アプリ起動時に呼ばれる)。"""
     for i in range(config.JOB_WORKERS):
         _workers.append(asyncio.create_task(_worker_loop(i)))
 
 
 async def stop_workers() -> None:
+    """全ワーカーを停止する(アプリ終了時に呼ばれる)。"""
     for task in _workers:
         task.cancel()
     await asyncio.gather(*_workers, return_exceptions=True)
@@ -42,6 +57,11 @@ async def stop_workers() -> None:
 
 
 async def _worker_loop(worker_id: int) -> None:
+    """キューからジョブを取り出して順に処理するループ。
+
+    文字起こしはブロッキング処理なので to_thread でイベントループの
+    外に逃がす。例外はジョブを error にして握りつぶし、ループは続行する。
+    """
     logger.info("job worker %d started", worker_id)
     while True:
         job_id = await _queue.get()
@@ -55,6 +75,11 @@ async def _worker_loop(worker_id: int) -> None:
 
 
 def _process_job(job_id: str) -> None:
+    """1ジョブを最後まで処理する(ワーカースレッド内で実行される)。
+
+    変換 → 話者分離の準備 → 文字起こし(セグメントごとに DB へ書き込み)
+    → 完了処理。元ファイルは完了時に削除し、結果だけを DB に残す。
+    """
     job = db.get_job(job_id)
     if job is None:
         return

@@ -1,3 +1,20 @@
+/**
+ * リアルタイム文字起こし画面。
+ *
+ * 音声の流れ:
+ *   getUserMedia (マイク)
+ *     → AudioWorklet (public/pcm-worklet.js で 16kHz int16 PCM に変換)
+ *     → WebSocket /ws/realtime へバイナリ送信
+ *     → サーバーから segment メッセージ (時刻・話者付き) を受信して表示
+ *
+ * サーバー側のプロトコル定義は server/realtime.py のモジュール docstring 参照。
+ *
+ * 状態遷移:
+ *   idle → connecting → recording ⇄ paused → finishing → idle
+ *   - pause: AudioContext を suspend して送信を止め、{"type":"pause"} を送る
+ *   - resume: 停止していた実時間 (gap) をサーバーへ伝えて時刻タグを補正
+ *   - stop: {"type":"stop"} を送り、サーバーの "done" を待ってから idle に戻る
+ */
 import { useEffect, useRef, useState } from "react";
 import {
   LANGUAGES,
@@ -36,6 +53,7 @@ export default function Recorder() {
 
   useEffect(() => () => cleanup(), []);
 
+  /** マイク・AudioContext・WebSocket をすべて閉じる(アンマウント時と開始失敗時)。 */
   function cleanup() {
     window.clearInterval(timerRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -46,6 +64,7 @@ export default function Recorder() {
     wsRef.current = null;
   }
 
+  /** 録音開始: WebSocket 接続 → 設定送信 → マイク音声のストリーミングを開始。 */
   async function start() {
     setError("");
     setSegments([]);
@@ -133,6 +152,7 @@ export default function Recorder() {
     setStatus("recording");
   }
 
+  /** 停止: マイクを閉じて stop を送り、サーバーが残バッファを確定するのを待つ。 */
   function stop() {
     window.clearInterval(timerRef.current);
     streamRef.current?.getTracks().forEach((t) => t.stop());
@@ -141,7 +161,8 @@ export default function Recorder() {
     ctxRef.current = null;
     const ws = wsRef.current;
     if (ws && ws.readyState === WebSocket.OPEN) {
-      // 残りのバッファをサーバー側で flush してもらう
+      // 残りのバッファをサーバー側で flush してもらう。
+      // "done" を受信したら onmessage 側で idle に戻る
       ws.send(JSON.stringify({ type: "stop" }));
       setStatus("finishing");
     } else {

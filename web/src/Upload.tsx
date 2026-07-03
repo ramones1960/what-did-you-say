@@ -1,3 +1,14 @@
+/**
+ * ファイルから文字起こしする画面。
+ *
+ * 流れ:
+ *   1. ファイル選択 or ドラッグ&ドロップ → POST /api/jobs (multipart)
+ *   2. 返ってきたジョブ ID を「表示中ジョブ (active)」として開く
+ *   3. 処理中は GET /api/jobs/{id}?segments_from=N を1.5秒間隔でポーリングし、
+ *      新しく確定したセグメントだけを差分で受け取って追記する
+ *   4. 完了後は話者の氏名設定 (PUT /api/jobs/{id}/speakers) と
+ *      エクスポート (GET /api/jobs/{id}/export?format=...) が使える
+ */
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Job,
@@ -51,6 +62,7 @@ export default function Upload() {
     return () => window.clearInterval(pollRef.current);
   }, [active?.id, active?.status, active?.segments?.length, refreshJobs]);
 
+  /** ファイルをアップロードしてジョブを作成し、その結果画面を開く。 */
   async function upload(file: File) {
     setError("");
     const form = new FormData();
@@ -71,6 +83,7 @@ export default function Upload() {
     await openJob(id);
   }
 
+  /** ジョブを開いて表示する。保存済みの話者氏名マッピングも復元する。 */
   async function openJob(id: string) {
     const res = await fetch(`/api/jobs/${id}`);
     if (!res.ok) return;
@@ -83,6 +96,7 @@ export default function Upload() {
     }
   }
 
+  /** 話者氏名マッピングをサーバーに保存する(エクスポートに反映される)。 */
   async function saveNames() {
     if (!active) return;
     setSavingNames(true);

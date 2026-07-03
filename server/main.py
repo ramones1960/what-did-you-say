@@ -1,4 +1,21 @@
-"""FastAPI アプリ本体。API とビルド済みフロントエンドの配信を担う。"""
+"""FastAPI アプリ本体。REST API・WebSocket・ビルド済みフロントエンドの配信を担う。
+
+エンドポイント一覧(詳細は docs/architecture.md):
+  GET    /api/health                    稼働確認とモデル名
+  POST   /api/jobs                      ファイルアップロード → ジョブ作成
+  GET    /api/jobs                      ジョブ一覧(新しい順)
+  GET    /api/jobs/{id}                 ジョブ詳細 + セグメント(ポーリング用)
+  DELETE /api/jobs/{id}                 ジョブ削除
+  PUT    /api/jobs/{id}/speakers        話者番号→氏名マッピングの保存
+  GET    /api/jobs/{id}/export          TXT / SRT / VTT / JSON エクスポート
+  GET    /api/presets                   用語リスト・コンテキストのプリセット一覧
+  POST   /api/presets                   プリセット作成(同名は上書き)
+  DELETE /api/presets/{id}              プリセット削除
+  WS     /ws/realtime                   リアルタイム文字起こし(realtime.py)
+  GET    /{path}                        SPA 配信(web/dist、フォールバックは index.html)
+
+全 API は auth.get_current_user を通る(v1 は常に匿名ユーザーを返すスタブ)。
+"""
 
 import json
 import logging
@@ -20,6 +37,7 @@ WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    """起動時にディレクトリ・DB・ワーカーを準備し、終了時にワーカーを止める。"""
     config.ensure_dirs()
     db.init_db()
     jobs.start_workers()
@@ -32,9 +50,12 @@ app = FastAPI(title="what-did-you-say", lifespan=lifespan)
 
 @app.get("/api/health")
 async def health() -> dict:
+    """稼働確認。フロントのヘッダーがモデル名表示に使う。"""
     return {"status": "ok", "model": config.MODEL_NAME}
 
 
+# 用語リスト・コンテキストの入力上限(文字数)。Whisper のプロンプトは
+# 約224トークンしか効かないため、これ以上長くしても効果がない
 MAX_PROMPT_CHARS = 1000
 
 
@@ -46,6 +67,12 @@ async def create_job(
     context: str = Form(""),
     user: auth.User = Depends(auth.get_current_user),
 ) -> dict:
+    """ファイルを受け取ってジョブを作成し、キューに積んで即座に ID を返す。
+
+    処理自体は非同期(jobs.py のワーカー)で行われるため、クライアントは
+    返された ID で GET /api/jobs/{id} をポーリングして進捗を追う。
+    language はクエリ、vocabulary / context はフォーム項目で受け取る。
+    """
     lang = language.strip() or None
     if lang and not re.fullmatch(r"[a-z]{2,3}", lang):
         raise HTTPException(400, "言語コードが不正です")
@@ -80,6 +107,7 @@ async def create_job(
 
 @app.get("/api/jobs")
 async def get_jobs(user: auth.User = Depends(auth.get_current_user)) -> list:
+    """ジョブ一覧(新しい順、セグメントは含まない)。"""
     return db.list_jobs()
 
 
@@ -89,6 +117,11 @@ async def get_job(
     segments_from: int = 0,
     user: auth.User = Depends(auth.get_current_user),
 ) -> dict:
+    """ジョブ詳細とセグメントを返す。
+
+    segments_from に前回取得済みのセグメント数を渡すと差分だけが返るため、
+    処理中のポーリングで全件を再取得せずに済む(web/src/Upload.tsx 参照)。
+    """
     job = db.get_job(job_id)
     if job is None:
         raise HTTPException(404, "ジョブが見つかりません")
@@ -100,6 +133,7 @@ async def get_job(
 async def remove_job(
     job_id: str, user: auth.User = Depends(auth.get_current_user)
 ) -> dict:
+    """完了・エラーのジョブを結果ごと削除する(処理中は 409)。"""
     job = db.get_job(job_id)
     if job is None:
         raise HTTPException(404, "ジョブが見つかりません")
@@ -135,6 +169,11 @@ async def export_job(
     format: str = "txt",
     user: auth.User = Depends(auth.get_current_user),
 ) -> Response:
+    """文字起こし結果を format (txt/srt/vtt/json) 指定でダウンロードさせる。
+
+    話者に氏名が登録されていれば「氏名: テキスト」の形で反映される。
+    ファイル名は元ファイル名 + 拡張子(日本語名は RFC 5987 でエンコード)。
+    """
     job = db.get_job(job_id)
     if job is None:
         raise HTTPException(404, "ジョブが見つかりません")
@@ -163,6 +202,7 @@ async def export_job(
 
 @app.get("/api/presets")
 async def list_presets(user: auth.User = Depends(auth.get_current_user)) -> list:
+    """プリセット一覧(名前順)。全利用者で共有される。"""
     return db.list_presets()
 
 
@@ -173,6 +213,7 @@ async def save_preset(
     context: str = Body(""),
     user: auth.User = Depends(auth.get_current_user),
 ) -> dict:
+    """プリセットを保存する。同名が存在すれば上書き(ID は維持)。"""
     name = name.strip()
     if not name or len(name) > 100:
         raise HTTPException(400, "プリセット名は1〜100文字で入力してください")
@@ -192,6 +233,7 @@ async def remove_preset(
 
 @app.websocket("/ws/realtime")
 async def ws_realtime(ws: WebSocket) -> None:
+    """リアルタイム文字起こし。プロトコルは realtime.py のモジュール docstring 参照。"""
     await realtime.handle_websocket(ws)
 
 
@@ -204,6 +246,10 @@ if WEB_DIST.is_dir():
 
     @app.get("/{path:path}")
     async def spa(path: str) -> FileResponse:
+        """SPA 配信。実在するファイルはそのまま、それ以外は index.html を返す。
+
+        resolve() + is_relative_to() でパストラバーサルを防いでいる。
+        """
         target = (WEB_DIST / path).resolve()
         if path and target.is_file() and target.is_relative_to(WEB_DIST):
             return FileResponse(target)

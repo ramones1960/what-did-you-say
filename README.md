@@ -10,6 +10,8 @@
 - 📤 **エクスポート** — TXT(時刻付き)/ SRT / VTT / JSON
 - 🐳 **Docker Compose で起動** — WSL2 でも社内サーバーでも同じ手順
 
+> 📘 開発・メンテナンス向けの詳細(処理フロー・DB スキーマ・API 仕様・拡張ポイント)は [docs/architecture.md](docs/architecture.md) を、開発時の注意点は [CLAUDE.md](CLAUDE.md) を参照してください。
+
 ## アーキテクチャ
 
 ```
