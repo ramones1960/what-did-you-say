@@ -9,12 +9,17 @@
  *   4. 完了後は話者の氏名設定 (PUT /api/jobs/{id}/speakers) と
  *      エクスポート (GET /api/jobs/{id}/export?format=...) が使える
  */
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  GRANULARITIES,
+  Granularity,
   Job,
   LANGUAGES,
   SpeakerNames,
   hms,
+  loadGranularity,
+  mergeSegments,
+  saveGranularity,
   speakerLabel,
   uniqueSpeakers,
 } from "./lib";
@@ -30,7 +35,14 @@ export default function Upload() {
   const [prompt, setPrompt] = usePromptSettings();
   const [names, setNames] = useState<SpeakerNames>({});
   const [savingNames, setSavingNames] = useState(false);
+  const [granularity, setGranularity] = useState<Granularity>(loadGranularity);
   const pollRef = useRef(0);
+
+  // 表示用に結合したセグメント(元データは active.segments に細かいまま残る)
+  const displaySegments = useMemo(
+    () => mergeSegments(active?.segments ?? [], granularity),
+    [active?.segments, granularity],
+  );
 
   const refreshJobs = useCallback(async () => {
     const res = await fetch("/api/jobs");
@@ -228,14 +240,32 @@ export default function Upload() {
               <progress value={active.progress} max={1} />
             )}
             <span className="spacer" />
+            <label className="inline-field">
+              発言の区切り
+              <select
+                value={granularity}
+                onChange={(e) => {
+                  const v = e.target.value as Granularity;
+                  setGranularity(v);
+                  saveGranularity(v);
+                }}
+              >
+                {GRANULARITIES.map(([value, label]) => (
+                  <option key={value} value={value}>
+                    {label}
+                  </option>
+                ))}
+              </select>
+            </label>
             {active.status === "done" && (
               <span className="status-note">ダウンロード:</span>
             )}
+            {/* 発言の区切りは TXT のみに反映(SRT/VTT は字幕用に細かいまま) */}
             {(["txt", "srt", "vtt", "json"] as const).map((fmt) => (
               <a
                 key={fmt}
                 className="button small"
-                href={`/api/jobs/${active.id}/export?format=${fmt}`}
+                href={`/api/jobs/${active.id}/export?format=${fmt}&granularity=${granularity}`}
               >
                 {fmt.toUpperCase()}
               </a>
@@ -250,7 +280,7 @@ export default function Upload() {
             saving={savingNames}
           />
           <div className="transcript">
-            {(active.segments ?? []).map((s) => (
+            {displaySegments.map((s) => (
               <p key={s.start + s.text}>
                 <span className="ts">[{hms(s.start)}]</span>
                 {s.speaker != null && (

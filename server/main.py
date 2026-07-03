@@ -167,11 +167,14 @@ async def set_speakers(
 async def export_job(
     job_id: str,
     format: str = "txt",
+    granularity: str = "standard",
     user: auth.User = Depends(auth.get_current_user),
 ) -> Response:
     """文字起こし結果を format (txt/srt/vtt/json) 指定でダウンロードさせる。
 
     話者に氏名が登録されていれば「氏名: テキスト」の形で反映される。
+    granularity (short/standard/long) は「発言の区切り」で、TXT のみに
+    適用される(SRT/VTT は字幕用途のため常に細かい粒度、JSON は生データ)。
     ファイル名は元ファイル名 + 拡張子(日本語名は RFC 5987 でエンコード)。
     """
     job = db.get_job(job_id)
@@ -182,6 +185,8 @@ async def export_job(
         return JSONResponse({"job": job, "segments": segments})
     if format not in exporters.FORMATS:
         raise HTTPException(400, f"未対応のフォーマットです: {format}")
+    if format == "txt":
+        segments = exporters.merge_segments(segments, granularity)
     try:
         names = json.loads(job.get("speaker_names") or "{}")
     except json.JSONDecodeError:

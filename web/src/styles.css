@@ -255,6 +255,14 @@ button.small,
   font-size: 0.8rem;
 }
 
+.inline-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.82rem;
+  color: var(--muted);
+}
+
 /* ---- ステータス表示 ---- */
 .status-note {
   color: var(--muted);

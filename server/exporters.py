@@ -1,12 +1,64 @@
-"""文字起こし結果のエクスポート(TXT / SRT / VTT)。
+"""文字起こし結果のエクスポート(TXT / SRT / VTT)とセグメント結合。
 
 speaker_names は {"1": "山田", ...} 形式のマップ。話者番号があり
 氏名が未設定の場合は「話者N」の仮名のまま出力する。
+
+セグメント結合(発言の区切り):
+認識は細かい粒度で DB に保存し、TXT 出力時に granularity 指定で結合する。
+SRT / VTT は字幕用途のため常に細かい粒度のまま。
+ルールとパラメータはフロント側 (web/src/lib.ts) と揃えること。
 """
 
+import re
 from typing import Any
 
 Names = dict[str, str] | None
+
+# 結合パラメータ: (結合する無音間隔[秒], 結合後の最大長[秒], 最大文字数)
+# short は結合しない(認識されたままの粒度)
+MERGE_PARAMS: dict[str, tuple[float, float, int] | None] = {
+    "short": None,
+    "standard": (1.5, 30.0, 120),
+    "long": (4.0, 60.0, 240),
+}
+
+
+def _join_text(a: str, b: str) -> str:
+    """テキストを連結する。欧文どうし(前が ASCII で終わり、次が英数字で
+    始まる)のときだけ空白を挟む。日本語どうしは空白なしで繋がる。"""
+    if a and ord(a[-1]) < 128 and a[-1] != " " and re.match(r"[A-Za-z0-9]", b):
+        return f"{a} {b}"
+    return a + b
+
+
+def merge_segments(
+    segments: list[dict[str, Any]], granularity: str
+) -> list[dict[str, Any]]:
+    """連続セグメントを「同一話者・間隔・上限」の条件で結合する。
+
+    時刻タグは結合ブロック先頭の時刻になる。granularity が未知の値の
+    場合は結合しない。
+    """
+    params = MERGE_PARAMS.get(granularity)
+    if params is None or not segments:
+        return segments
+    gap, max_dur, max_chars = params
+
+    merged: list[dict[str, Any]] = []
+    for seg in segments:
+        last = merged[-1] if merged else None
+        if (
+            last is not None
+            and seg.get("speaker") == last.get("speaker")
+            and seg["start"] - last["end"] < gap
+            and seg["end"] - last["start"] <= max_dur
+            and len(last["text"]) + len(seg["text"]) <= max_chars
+        ):
+            last["end"] = seg["end"]
+            last["text"] = _join_text(last["text"], seg["text"])
+        else:
+            merged.append(dict(seg))
+    return merged
 
 
 def _hms(seconds: float) -> str:

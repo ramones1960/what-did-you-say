@@ -15,13 +15,18 @@
  *   - resume: 停止していた実時間 (gap) をサーバーへ伝えて時刻タグを補正
  *   - stop: {"type":"stop"} を送り、サーバーの "done" を待ってから idle に戻る
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  GRANULARITIES,
+  Granularity,
   LANGUAGES,
   Segment,
   SpeakerNames,
   downloadText,
   hms,
+  loadGranularity,
+  mergeSegments,
+  saveGranularity,
   speakerLabel,
   uniqueSpeakers,
   wsUrl,
@@ -39,6 +44,13 @@ export default function Recorder() {
   const [elapsed, setElapsed] = useState(0);
   const [prompt, setPrompt] = usePromptSettings();
   const [names, setNames] = useState<SpeakerNames>({});
+  const [granularity, setGranularity] = useState<Granularity>(loadGranularity);
+
+  // 表示・保存用に結合したセグメント(元データは segments に細かいまま残る)
+  const displaySegments = useMemo(
+    () => mergeSegments(segments, granularity),
+    [segments, granularity],
+  );
 
   const wsRef = useRef<WebSocket | null>(null);
   const ctxRef = useRef<AudioContext | null>(null);
@@ -207,11 +219,28 @@ export default function Recorder() {
         {status === "paused" && <span className="status-note">一時停止中 {hms(elapsed)}</span>}
         {status === "connecting" && <span className="status-note">接続中…</span>}
         <span className="spacer" />
+        <label className="inline-field">
+          発言の区切り
+          <select
+            value={granularity}
+            onChange={(e) => {
+              const v = e.target.value as Granularity;
+              setGranularity(v);
+              saveGranularity(v);
+            }}
+          >
+            {GRANULARITIES.map(([value, label]) => (
+              <option key={value} value={value}>
+                {label}
+              </option>
+            ))}
+          </select>
+        </label>
         <button
           onClick={() =>
             downloadText(
               "transcript.txt",
-              segments
+              displaySegments
                 .map((s) => {
                   const label = speakerLabel(s.speaker, names);
                   return `[${hms(s.start)}] ${label ? `${label}: ` : ""}${s.text}`;
@@ -241,7 +270,7 @@ export default function Recorder() {
             「録音を開始」を押すとマイクの使用許可を求められます。話した内容は発話の区切りごとに、時刻・話者タグ付きでここに表示されます。
           </p>
         )}
-        {segments.map((s, i) => (
+        {displaySegments.map((s, i) => (
           <p key={i}>
             <span className="ts">[{hms(s.start)}]</span>
             {s.speaker != null && (
