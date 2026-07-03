@@ -52,9 +52,27 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 
 GPU 構成では既定モデルが `large-v3`(高精度)になります。
 
+### プロキシ環境での利用
+
+社内プロキシ経由でしか外部に出られない環境では、`.env`(または シェルの環境変数)にプロキシを設定してください。
+
+```bash
+# .env
+HTTP_PROXY=http://proxy.example.internal:8080
+HTTPS_PROXY=http://proxy.example.internal:8080
+NO_PROXY=localhost,127.0.0.1
+```
+
+この設定は次の2箇所に自動で引き継がれます。
+
+- **ビルド時** — `npm install` / `pip install`(compose の `build.args` 経由。イメージには焼き込まれません)
+- **実行時** — 初回の Whisper モデルダウンロード(huggingface_hub が標準でこれらの環境変数を参照)
+
+外部通信が発生するのは上記のみで、文字起こし自体は完全ローカルです。モデルダウンロード後はプロキシ設定がなくても動作します(完全オフライン環境では、別環境で作成した `model_cache` ボリュームの中身を持ち込むことも可能)。
+
 ### 設定(環境変数)
 
-`.env` ファイルまたは環境変数で上書きできます。
+`.env` ファイルまたは環境変数で上書きできます(設定例: [.env.example](.env.example))。
 
 | 変数 | 既定値 | 説明 |
 |---|---|---|

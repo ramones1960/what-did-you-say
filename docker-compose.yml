@@ -1,6 +1,15 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      args:
+        # ビルド時 (npm install / pip install) にホストのプロキシ設定を引き継ぐ
+        - HTTP_PROXY
+        - HTTPS_PROXY
+        - NO_PROXY
+        - http_proxy
+        - https_proxy
+        - no_proxy
     restart: unless-stopped
     environment:
       WHISPER_MODEL: ${WHISPER_MODEL:-small}
@@ -8,6 +17,14 @@ services:
       WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-auto}
       JOB_WORKERS: ${JOB_WORKERS:-1}
       MAX_REALTIME_SESSIONS: ${MAX_REALTIME_SESSIONS:-2}
+      # 実行時 (Hugging Face からのモデルダウンロード) 用プロキシ。
+      # huggingface_hub が標準でこれらの環境変数を参照する
+      HTTP_PROXY: ${HTTP_PROXY:-}
+      HTTPS_PROXY: ${HTTPS_PROXY:-}
+      NO_PROXY: ${NO_PROXY:-}
+      http_proxy: ${http_proxy:-${HTTP_PROXY:-}}
+      https_proxy: ${https_proxy:-${HTTPS_PROXY:-}}
+      no_proxy: ${no_proxy:-${NO_PROXY:-}}
     volumes:
       - app_data:/data
       - model_cache:/root/.cache/huggingface
