@@ -167,24 +167,24 @@ export default function Recorder() {
         </select>
         {status === "idle" ? (
           <button className="primary" onClick={start}>
-            ● 録音開始
+            録音を開始
           </button>
         ) : (
           <>
-            {recording && <button onClick={pause}>⏸ 一時停止</button>}
+            {recording && <button onClick={pause}>一時停止</button>}
             {status === "paused" && (
               <button className="primary" onClick={resume}>
-                ▶ 再開
+                再開
               </button>
             )}
             <button onClick={stop} disabled={status === "finishing"}>
-              {status === "finishing" ? "処理中…" : "■ 停止"}
+              {status === "finishing" ? "処理中…" : "停止"}
             </button>
           </>
         )}
         {recording && <span className="rec-indicator">録音中 {hms(elapsed)}</span>}
-        {status === "paused" && <span className="muted">一時停止中 {hms(elapsed)}</span>}
-        {status === "connecting" && <span className="muted">接続中…</span>}
+        {status === "paused" && <span className="status-note">一時停止中 {hms(elapsed)}</span>}
+        {status === "connecting" && <span className="status-note">接続中…</span>}
         <span className="spacer" />
         <button
           onClick={() =>
@@ -200,7 +200,7 @@ export default function Recorder() {
           }
           disabled={segments.length === 0}
         >
-          TXT ダウンロード
+          テキストを保存 (TXT)
         </button>
       </div>
 
@@ -216,8 +216,8 @@ export default function Recorder() {
 
       <div className="transcript" ref={listRef}>
         {segments.length === 0 && (
-          <p className="muted">
-            マイクに向かって話すと、発話の区切りごとに時刻付きで文字起こしされます。
+          <p className="empty-state">
+            「録音を開始」を押すとマイクの使用許可を求められます。話した内容は発話の区切りごとに、時刻・話者タグ付きでここに表示されます。
           </p>
         )}
         {segments.map((s, i) => (

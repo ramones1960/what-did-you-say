@@ -154,7 +154,10 @@ export default function Upload() {
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
       >
-        音声・動画ファイルをここにドラッグ&ドロップ
+        <strong>音声・動画ファイルをここにドラッグ&ドロップ</strong>
+        <span className="hint">
+          対応形式: mp3 / wav / m4a / flac / mp4 / mov / mkv / webm など。動画は音声のみを抽出して処理します。
+        </span>
       </div>
 
       {error && <p className="error">{error}</p>}
@@ -163,11 +166,11 @@ export default function Upload() {
         <table className="jobs">
           <thead>
             <tr>
-              <th>ファイル</th>
+              <th>ファイル名</th>
               <th>状態</th>
               <th>言語</th>
               <th>長さ</th>
-              <th></th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody>
@@ -211,6 +214,9 @@ export default function Upload() {
               <progress value={active.progress} max={1} />
             )}
             <span className="spacer" />
+            {active.status === "done" && (
+              <span className="status-note">ダウンロード:</span>
+            )}
             {(["txt", "srt", "vtt", "json"] as const).map((fmt) => (
               <a
                 key={fmt}
@@ -242,8 +248,16 @@ export default function Upload() {
               </p>
             ))}
             {active.status === "done" && (active.segments ?? []).length === 0 && (
-              <p className="muted">音声から発話を検出できませんでした。</p>
+              <p className="empty-state">
+                音声から発話を検出できませんでした。無音のファイルでないかご確認ください。
+              </p>
             )}
+            {(active.status === "processing" || active.status === "queued") &&
+              (active.segments ?? []).length === 0 && (
+                <p className="empty-state">
+                  処理中です。文字起こしされたテキストから順にここに表示されます。
+                </p>
+              )}
           </div>
         </div>
       )}

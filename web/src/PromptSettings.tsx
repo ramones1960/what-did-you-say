@@ -46,37 +46,40 @@ export default function PromptSettings({
 }) {
   const hasContent = values.vocabulary.trim() || values.context.trim();
   return (
-    <details className="prompt-settings" open={!!hasContent}>
+    <details className="panel" open={!!hasContent}>
       <summary>
-        精度向上の設定(用語リスト・コンテキスト)
-        {hasContent ? <span className="badge">設定中</span> : null}
+        認識精度の設定
+        <span className="summary-note">用語リスト・コンテキスト(任意)</span>
+        {hasContent ? <span className="badge badge-accent">設定あり</span> : null}
       </summary>
-      <div className="prompt-fields">
+      <div className="panel-body prompt-fields">
         <label>
-          用語リスト
+          <span className="field-label">用語リスト</span>
           <textarea
             rows={4}
-            placeholder={"固有名詞・専門用語を1行1語またはカンマ区切りで\n例:\n山田太郎\nDX推進室, SaaS"}
+            placeholder={"例:\n山田太郎\nDX推進室, 基幹システム刷新"}
             value={values.vocabulary}
             maxLength={MAX_CHARS}
             disabled={disabled}
             onChange={(e) => onChange({ ...values, vocabulary: e.target.value })}
           />
           <span className="hint">
-            認識されやすくなります(数十語程度まで。多すぎると効果が薄れます)
+            人名・製品名・部署名などを1行1語(またはカンマ区切り)で登録すると、正しく認識されやすくなります。目安は50語まで。入力内容はこのブラウザに保存され、次回も引き継がれます。
           </span>
         </label>
         <label>
-          コンテキスト
+          <span className="field-label">コンテキスト</span>
           <textarea
             rows={4}
-            placeholder={"音声の前提を文章で\n例: これは製品開発チームの週次定例会議です。議題はリリース計画とバグ対応の優先順位です。"}
+            placeholder={"例: 製品開発部の週次定例会議。議題はリリース計画とバグ対応の優先順位。"}
             value={values.context}
             maxLength={MAX_CHARS}
             disabled={disabled}
             onChange={(e) => onChange({ ...values, context: e.target.value })}
           />
-          <span className="hint">話題・文体のヒントとして冒頭の認識に反映されます</span>
+          <span className="hint">
+            会議や音声の概要を1〜2文で入力すると、文脈に沿った表記になりやすくなります。
+          </span>
         </label>
       </div>
     </details>
