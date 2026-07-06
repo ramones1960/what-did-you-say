@@ -1,9 +1,10 @@
 """SQLite によるジョブ・文字起こし結果・プリセットの永続化。
 
 テーブル構成(スキーマは _SCHEMA、詳細は docs/architecture.md):
-  jobs     : ファイル文字起こしのジョブ(状態・進捗・設定・話者氏名)
-  segments : 文字起こし結果のセグメント(時刻・テキスト・話者番号)
-  presets  : 用語リスト・コンテキストの共有プリセット
+  jobs      : ファイル文字起こしのジョブ(状態・進捗・設定・話者氏名)
+  segments  : 文字起こし結果のセグメント(時刻・テキスト・話者番号)
+  presets   : 用語リスト・コンテキストの共有プリセット
+  summaries : LLM で生成した要約・議事録(ジョブ×種類ごとに1件、再生成で上書き)
 
 接続は操作ごとに開閉するシンプルな方式(WAL モード)。書き込み頻度は
 セグメント確定時程度なので、この規模ではコネクションプール等は不要。
@@ -49,6 +50,14 @@ CREATE TABLE IF NOT EXISTS segments (
     text    TEXT NOT NULL,
     speaker INTEGER,                     -- 話者番号 (1始まり、無効時は NULL)
     PRIMARY KEY (job_id, idx)
+);
+CREATE TABLE IF NOT EXISTS summaries (
+    job_id     TEXT NOT NULL,
+    kind       TEXT NOT NULL,            -- summary(要約) / minutes(議事録)
+    content    TEXT NOT NULL,
+    model      TEXT NOT NULL,            -- 生成に使った LLM モデル名
+    created_at REAL NOT NULL,
+    PRIMARY KEY (job_id, kind)
 );
 """
 
@@ -159,6 +168,31 @@ def get_segments(job_id: str, offset: int = 0) -> list[dict[str, Any]]:
         return [dict(r) for r in rows]
 
 
+def list_jobs_by_status(statuses: tuple[str, ...]) -> list[dict[str, Any]]:
+    """指定した状態のジョブを古い順に返す(再起動時の回収用)。"""
+    placeholders = ",".join("?" for _ in statuses)
+    with _conn() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM jobs WHERE status IN ({placeholders}) ORDER BY created_at",
+            statuses,
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def reset_job(job_id: str) -> None:
+    """ジョブを queued に戻し、途中結果(セグメント・進捗)を消す。
+
+    processing 中にプロセスが落ちたジョブを最初からやり直すために使う。
+    Whisper は途中から再開できないため、途中結果は破棄して作り直す。
+    """
+    with _conn() as conn:
+        conn.execute("DELETE FROM segments WHERE job_id = ?", (job_id,))
+        conn.execute(
+            "UPDATE jobs SET status = 'queued', error = NULL, progress = 0 WHERE id = ?",
+            (job_id,),
+        )
+
+
 def list_jobs(limit: int = 50) -> list[dict[str, Any]]:
     with _conn() as conn:
         rows = conn.execute(
@@ -170,7 +204,32 @@ def list_jobs(limit: int = 50) -> list[dict[str, Any]]:
 def delete_job(job_id: str) -> None:
     with _conn() as conn:
         conn.execute("DELETE FROM segments WHERE job_id = ?", (job_id,))
+        conn.execute("DELETE FROM summaries WHERE job_id = ?", (job_id,))
         conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+
+
+# --- LLM 生成結果(要約・議事録) ---
+
+def save_summary(job_id: str, kind: str, content: str, model: str) -> dict[str, Any]:
+    """生成結果を保存する。同じジョブ×種類は上書き(再生成)。"""
+    now = time.time()
+    with _conn() as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO summaries (job_id, kind, content, model, created_at)"
+            " VALUES (?, ?, ?, ?, ?)",
+            (job_id, kind, content, model, now),
+        )
+    return {"kind": kind, "content": content, "model": model, "created_at": now}
+
+
+def get_summaries(job_id: str) -> dict[str, dict[str, Any]]:
+    """ジョブの生成結果を kind をキーにした辞書で返す。"""
+    with _conn() as conn:
+        rows = conn.execute(
+            "SELECT kind, content, model, created_at FROM summaries WHERE job_id = ?",
+            (job_id,),
+        ).fetchall()
+        return {r["kind"]: dict(r) for r in rows}
 
 
 # --- 用語リスト・コンテキストのプリセット ---

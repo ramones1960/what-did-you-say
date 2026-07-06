@@ -20,6 +20,7 @@ import {
   GRANULARITIES,
   Granularity,
   LANGUAGES,
+  LlmInfo,
   Segment,
   SpeakerNames,
   downloadText,
@@ -33,12 +34,16 @@ import {
 } from "./lib";
 import PromptSettings, { usePromptSettings } from "./PromptSettings";
 import SpeakerNamesPanel from "./SpeakerNames";
+import SummaryPanel from "./SummaryPanel";
 
 type Status = "idle" | "connecting" | "recording" | "paused" | "finishing";
 
-export default function Recorder() {
+export default function Recorder({ llm }: { llm: LlmInfo | null }) {
   const [status, setStatus] = useState<Status>("idle");
   const [segments, setSegments] = useState<Segment[]>([]);
+  // 発話中の暫定テキスト(サーバーの partial メッセージ)。確定前の参考表示で、
+  // 次の partial か確定セグメントで置き換わる。保存対象には含めない
+  const [partial, setPartial] = useState<{ start: number; text: string } | null>(null);
   const [error, setError] = useState("");
   const [language, setLanguage] = useState("ja");
   const [elapsed, setElapsed] = useState(0);
@@ -61,7 +66,7 @@ export default function Recorder() {
 
   useEffect(() => {
     listRef.current?.scrollTo({ top: listRef.current.scrollHeight });
-  }, [segments]);
+  }, [segments, partial]);
 
   useEffect(() => () => cleanup(), []);
 
@@ -80,6 +85,7 @@ export default function Recorder() {
   async function start() {
     setError("");
     setSegments([]);
+    setPartial(null);
     setElapsed(0);
     setStatus("connecting");
     try {
@@ -95,11 +101,15 @@ export default function Recorder() {
         const msg = JSON.parse(ev.data);
         if (msg.type === "segment") {
           setSegments((prev) => [...prev, msg]);
+          setPartial(null); // 確定が届いたので暫定表示は消す
+        } else if (msg.type === "partial") {
+          setPartial(msg.text ? { start: msg.start, text: msg.text } : null);
         } else if (msg.type === "error") {
           setError(msg.message);
           stop();
         } else if (msg.type === "done") {
           ws.close();
+          setPartial(null);
           setStatus("idle");
         }
       };
@@ -281,7 +291,23 @@ export default function Recorder() {
             {s.text}
           </p>
         ))}
+        {partial && (
+          <p className="partial" title="発話中の暫定テキスト(確定時に置き換わります)">
+            <span className="ts">[{hms(partial.start)}]</span>
+            {partial.text}
+          </p>
+        )}
       </div>
+
+      {/* 録音停止後に、その場の結果から要約・議事録を生成できる(保存はされない) */}
+      {status === "idle" && (
+        <SummaryPanel
+          llm={llm}
+          segments={segments}
+          names={names}
+          filenameBase="realtime"
+        />
+      )}
     </section>
   );
 }

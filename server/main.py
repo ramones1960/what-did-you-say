@@ -8,6 +8,8 @@
   DELETE /api/jobs/{id}                 ジョブ削除
   PUT    /api/jobs/{id}/speakers        話者番号→氏名マッピングの保存
   GET    /api/jobs/{id}/export          TXT / SRT / VTT / JSON エクスポート
+  POST   /api/jobs/{id}/summaries       LLM で要約 / 議事録を生成して保存(llm.py)
+  POST   /api/summarize                 セグメントを直接渡して LLM 生成(リアルタイム用・保存なし)
   GET    /api/presets                   用語リスト・コンテキストのプリセット一覧
   POST   /api/presets                   プリセット作成(同名は上書き)
   DELETE /api/presets/{id}              プリセット削除
@@ -17,6 +19,7 @@
 全 API は auth.get_current_user を通る(v1 は常に匿名ユーザーを返すスタブ)。
 """
 
+import asyncio
 import json
 import logging
 import re
@@ -28,7 +31,7 @@ import anyio
 from fastapi import Body, Depends, FastAPI, Form, HTTPException, UploadFile, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response
 
-from . import auth, config, db, exporters, jobs, realtime
+from . import auth, config, db, exporters, jobs, llm, realtime
 
 logging.basicConfig(level=logging.INFO)
 
@@ -50,8 +53,15 @@ app = FastAPI(title="what-did-you-say", lifespan=lifespan)
 
 @app.get("/api/health")
 async def health() -> dict:
-    """稼働確認。フロントのヘッダーがモデル名表示に使う。"""
-    return {"status": "ok", "model": config.MODEL_NAME}
+    """稼働確認。フロントがモデル名表示と LLM 機能(要約・議事録)の出し分けに使う。"""
+    return {
+        "status": "ok",
+        "model": config.MODEL_NAME,
+        "llm": {
+            "enabled": llm.enabled(),
+            "model": config.LLM_MODEL if llm.enabled() else None,
+        },
+    }
 
 
 # 用語リスト・コンテキストの入力上限(文字数)。Whisper のプロンプトは
@@ -126,6 +136,7 @@ async def get_job(
     if job is None:
         raise HTTPException(404, "ジョブが見つかりません")
     job["segments"] = db.get_segments(job_id, offset=segments_from)
+    job["summaries"] = db.get_summaries(job_id)
     return job
 
 
@@ -201,6 +212,93 @@ async def export_job(
             "Content-Disposition": f"attachment; filename*=UTF-8''{quoted}"
         },
     )
+
+
+# --- LLM 連携(要約・議事録) ---
+
+# リアルタイム画面から直接渡せるセグメント数の上限(異常な巨大リクエスト対策)
+MAX_SUMMARIZE_SEGMENTS = 20000
+
+
+def _validate_summarize_segments(segments: list) -> list[dict]:
+    """クライアントから直接渡されたセグメント一覧を検証・整形する。"""
+    if not isinstance(segments, list) or not segments:
+        raise HTTPException(400, "セグメントがありません")
+    if len(segments) > MAX_SUMMARIZE_SEGMENTS:
+        raise HTTPException(400, "セグメント数が多すぎます")
+    cleaned = []
+    for seg in segments:
+        try:
+            cleaned.append(
+                {
+                    "start": float(seg["start"]),
+                    "end": float(seg["end"]),
+                    "text": str(seg["text"]),
+                    "speaker": seg.get("speaker"),
+                }
+            )
+        except (TypeError, KeyError, ValueError):
+            raise HTTPException(400, "セグメントの形式が不正です")
+    return cleaned
+
+
+@app.post("/api/jobs/{job_id}/summaries")
+async def create_job_summary(
+    job_id: str,
+    kind: str = Body(embed=True),
+    user: auth.User = Depends(auth.get_current_user),
+) -> dict:
+    """完了済みジョブの文字起こしから要約 / 議事録を LLM で生成して保存する。
+
+    kind は summary(要約)/ minutes(議事録)。同じ種類は再生成で上書き。
+    生成には数十秒〜数分かかる(ローカル LLM の性能次第)。
+    """
+    if not llm.enabled():
+        raise HTTPException(503, "LLM 連携が設定されていません(LLM_API_URL を設定してください)")
+    if kind not in llm.KINDS:
+        raise HTTPException(400, f"未対応の生成種類です: {kind}")
+    job = db.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "ジョブが見つかりません")
+    if job["status"] != "done":
+        raise HTTPException(409, "文字起こしが完了してから生成してください")
+    segments = db.get_segments(job_id)
+    if not segments:
+        raise HTTPException(400, "文字起こし結果が空のため生成できません")
+    try:
+        names = json.loads(job.get("speaker_names") or "{}")
+    except json.JSONDecodeError:
+        names = {}
+    try:
+        content = await asyncio.to_thread(llm.generate, kind, segments, names)
+    except llm.LLMError as e:
+        raise HTTPException(502, str(e))
+    return db.save_summary(job_id, kind, content, config.LLM_MODEL)
+
+
+@app.post("/api/summarize")
+async def summarize(
+    kind: str = Body(embed=True),
+    segments: list = Body(embed=True),
+    speaker_names: dict[str, str] = Body(default={}, embed=True),
+    user: auth.User = Depends(auth.get_current_user),
+) -> dict:
+    """セグメントを直接渡して要約 / 議事録を生成する(保存しない)。
+
+    リアルタイム文字起こしの結果はサーバーに保存されないため、
+    クライアントが持っているセグメントをそのまま送ってもらう。
+    """
+    if not llm.enabled():
+        raise HTTPException(503, "LLM 連携が設定されていません(LLM_API_URL を設定してください)")
+    if kind not in llm.KINDS:
+        raise HTTPException(400, f"未対応の生成種類です: {kind}")
+    cleaned = _validate_summarize_segments(segments)
+    names = {k: v for k, v in speaker_names.items() if isinstance(v, str)}
+    try:
+        content = await asyncio.to_thread(llm.generate, kind, cleaned, names)
+    except llm.LLMError as e:
+        raise HTTPException(502, str(e))
+    return {"kind": kind, "content": content, "model": config.LLM_MODEL}
 
 
 # --- 用語リスト・コンテキストのプリセット ---

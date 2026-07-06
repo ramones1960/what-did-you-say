@@ -6,20 +6,24 @@ speaker_names は {"1": "山田", ...} 形式のマップ。話者番号があ�
 セグメント結合(発言の区切り):
 認識は細かい粒度で DB に保存し、TXT 出力時に granularity 指定で結合する。
 SRT / VTT は字幕用途のため常に細かい粒度のまま。
-ルールとパラメータはフロント側 (web/src/lib.ts) と揃えること。
+パラメータの正典は shared/merge_params.json(フロント側 web/src/lib.ts も
+同じファイルを読むため、値の変更はそのファイルだけでよい)。
+結合ルールのロジック自体は lib.ts の mergeSegments と揃えること。
 """
 
+import json as _json
 import re
+from pathlib import Path
 from typing import Any
 
 Names = dict[str, str] | None
 
 # 結合パラメータ: (結合する無音間隔[秒], 結合後の最大長[秒], 最大文字数)
-# short は結合しない(認識されたままの粒度)
+# short は結合しない(認識されたままの粒度)。正典は shared/merge_params.json
+_MERGE_PARAMS_FILE = Path(__file__).resolve().parent.parent / "shared" / "merge_params.json"
 MERGE_PARAMS: dict[str, tuple[float, float, int] | None] = {
-    "short": None,
-    "standard": (1.5, 30.0, 120),
-    "long": (4.0, 60.0, 240),
+    name: (p["gap"], p["max_duration"], p["max_chars"]) if p else None
+    for name, p in _json.loads(_MERGE_PARAMS_FILE.read_text(encoding="utf-8")).items()
 }
 
 

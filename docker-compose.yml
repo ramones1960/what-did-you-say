@@ -17,6 +17,14 @@ services:
       WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-auto}
       JOB_WORKERS: ${JOB_WORKERS:-1}
       MAX_REALTIME_SESSIONS: ${MAX_REALTIME_SESSIONS:-2}
+      REALTIME_PARTIAL_INTERVAL: ${REALTIME_PARTIAL_INTERVAL:-2.0}
+      DIARIZATION: ${DIARIZATION:-1}
+      SPEAKER_THRESHOLD: ${SPEAKER_THRESHOLD:-0.4}
+      # ローカル LLM 連携(要約・議事録)。未設定なら機能ごと無効。
+      # ホスト側の Ollama を使う場合: http://host.docker.internal:11434/v1
+      LLM_API_URL: ${LLM_API_URL:-}
+      LLM_MODEL: ${LLM_MODEL:-qwen2.5:7b-instruct}
+      LLM_API_KEY: ${LLM_API_KEY:-}
       # 実行時 (Hugging Face からのモデルダウンロード) 用プロキシ。
       # huggingface_hub が標準でこれらの環境変数を参照する
       HTTP_PROXY: ${HTTP_PROXY:-}
@@ -28,6 +36,10 @@ services:
     volumes:
       - app_data:/data
       - model_cache:/root/.cache/huggingface
+    # コンテナからホストの LLM サーバー (Ollama 等) に host.docker.internal で届くように
+    # (Docker Desktop では標準、Linux の Docker Engine ではこの指定が必要)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     # ローカル開発用: http://localhost:8000 で直接アクセスできる
     ports:
       - "127.0.0.1:8000:8000"

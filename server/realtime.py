@@ -24,6 +24,10 @@ Whisper 自体はストリーミング非対応のため、この
     {"type": "segment", "start": 1.2, "end": 3.4, "text": "...", "speaker": 1}
         確定した文字起こし。start/end は録音開始からの実時間(秒)、
         speaker は話者番号(話者分離が無効なら null)
+    {"type": "partial", "start": 1.2, "text": "..."}
+        発話中の暫定テキスト(REALTIME_PARTIAL_INTERVAL 秒ごと・ベストエフォート)。
+        次の partial または segment で置き換える。text が空文字なら表示を消す。
+        確定ではないため保存対象にしないこと
     {"type": "paused"}                   pause の完了通知
     {"type": "done"}                     stop の完了通知(この後クローズ想定)
     {"type": "error", "message": "..."}  受理拒否など(送信後クローズ)
@@ -34,12 +38,13 @@ Whisper 自体はストリーミング非対応のため、この
 import asyncio
 import json
 import logging
+import time
 
 import numpy as np
 from fastapi import WebSocket, WebSocketDisconnect
 from faster_whisper.vad import VadOptions, get_speech_timestamps
 
-from . import config, diarize, transcriber
+from . import config, diarize, exporters, transcriber
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +79,8 @@ class RealtimeSession:
         self.vocabulary: str | None = None
         self.context: str | None = None
         self.since_vad = 0.0  # 前回 VAD 実行以降に受信した音声量(秒)
+        self.last_partial = 0.0  # 前回 partial を送った時刻(monotonic)
+        self.partial_shown = False  # クライアントに partial が表示されているか
         self.tracker = diarize.SpeakerTracker()
 
     async def run(self) -> None:
@@ -156,6 +163,8 @@ class RealtimeSession:
                 cut = last_end
 
         if cut is None:
+            # 発話継続中: 確定はできないが、間隔が空いていれば暫定テキストを送る
+            await self._maybe_send_partial()
             return
 
         chunk = self.buffer[:cut].copy()
@@ -182,6 +191,49 @@ class RealtimeSession:
                     "speaker": speaker,
                 }
             )
+        # 確定を送ったので暫定表示は不要になった。セグメントが1つも出なかった
+        # 場合(ノイズのみ等)も、残った暫定表示を消す
+        if self.partial_shown:
+            await self._send_partial(0.0, "")
+        self.last_partial = time.monotonic()
+
+    async def _maybe_send_partial(self) -> None:
+        """発話継続中のバッファを推論して暫定テキストを送る(ベストエフォート)。
+
+        確定推論を妨げないよう、次の場合はスキップする:
+          - 無効化されている(REALTIME_PARTIAL_INTERVAL <= 0)
+          - 前回の partial から間隔が空いていない
+          - 推論ロックが使用中(確定側・他セッションを優先)
+        バッファは消費しない。次の partial か確定セグメントで置き換えられる。
+        """
+        interval = config.REALTIME_PARTIAL_INTERVAL
+        if interval <= 0:
+            return
+        if time.monotonic() - self.last_partial < interval:
+            return
+        if transcriber.inference_lock.locked():
+            return
+        chunk = self.buffer.copy()
+        base = self.offset
+        segments = await asyncio.to_thread(
+            lambda: list(
+                transcriber.transcribe_pcm(
+                    chunk, self.language, self.vocabulary, self.context
+                )
+            )
+        )
+        text = ""
+        for seg in segments:
+            text = exporters._join_text(text, seg.text)
+        self.last_partial = time.monotonic()
+        if text or self.partial_shown:
+            await self._send_partial(base, text)
+
+    async def _send_partial(self, start: float, text: str) -> None:
+        await self.ws.send_json(
+            {"type": "partial", "start": round(start, 2), "text": text}
+        )
+        self.partial_shown = bool(text)
 
     def _consume(self, samples: int) -> None:
         """バッファ先頭 samples 個を消費済みにし、絶対時刻オフセットを進める。"""

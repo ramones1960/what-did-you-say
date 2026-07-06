@@ -20,7 +20,13 @@ docker compose up -d --build
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build  # GPU
 ```
 
-テストスイートは未整備。動作確認は「curl で API を叩く」「Playwright(インストール済みの
+```bash
+# テスト (モデル推論・ダウンロードなし、数秒で終わる。CI でも実行される)
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest tests/
+```
+
+推論を含む end-to-end の動作確認は「curl で API を叩く」「Playwright(インストール済みの
 /opt/pw-browsers/chromium)で UI を操作する」方式で行っている。軽い確認は
 `WHISPER_MODEL=tiny` を使うと速い(精度は低いがパイプライン検証には十分)。
 
@@ -32,6 +38,9 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build  # 
   (ALTER TABLE)の両方に追記する。既存 DB を壊さないこと
 - **WebSocket プロトコル**を変えるときは `server/realtime.py` のモジュール docstring
   (正典)と `web/src/Recorder.tsx` の両方を更新する
+- **発言の区切りの結合パラメータ**の正典は `shared/merge_params.json`(サーバー・
+  フロントの両方が読む)。値の変更はこのファイルだけでよいが、結合ロジック自体を
+  変えるときは `server/exporters.py` と `web/src/lib.ts` の両方を揃える
 - **ブロッキング処理**(推論・ffmpeg・埋め込み抽出)は必ず `asyncio.to_thread` 経由。
   イベントループ上で直接呼ぶとリアルタイム音声の受信が詰まる
 - **モデル推論は inference_lock で直列化**されている。並列化したい場合は
@@ -42,7 +51,8 @@ docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build  # 
 
 ## 設計上の前提(壊さないこと)
 
-- **完全ローカル**: 外部通信は初回のモデルダウンロードのみ。解析系 SaaS や CDN を足さない
+- **完全ローカル**: 外部通信は初回のモデルダウンロードのみ。解析系 SaaS や CDN を足さない。
+  LLM 連携(`server/llm.py`)もローカルの OpenAI 互換サーバー限定で、未設定なら機能ごと無効
 - **認証は auth.py の1関数に集約**: 全 API が `Depends(auth.get_current_user)` を通る。
   エンドポイント追加時も必ず付ける
 - **話者ラベルは仮名(話者N)で保存し、氏名は speaker_names マッピングで後付け**。

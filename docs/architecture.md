@@ -19,7 +19,8 @@
    ├─ diarize.py    話者分離 (sherpa-onnx 話者埋め込み + クラスタリング)
    ├─ media.py      ffmpeg / ffprobe (動画・音声 → 16kHz mono WAV)
    ├─ exporters.py  TXT / SRT / VTT 生成 (話者氏名の反映を含む)
-   ├─ db.py         SQLite 永続化 (jobs / segments / presets)
+   ├─ llm.py        ローカル LLM 連携 (要約・議事録の生成、任意機能)
+   ├─ db.py         SQLite 永続化 (jobs / segments / presets / summaries)
    ├─ auth.py       認証の差し込みポイント (v1 は匿名スタブ)
    └─ config.py     環境変数ベースの設定
 ```
@@ -41,6 +42,7 @@
 ```
 
 - Whisper はストリーミング非対応のため「VAD で発話単位に区切ってチャンク推論」する設計。**発話が終わってから1〜数秒でテキスト確定**という体験になる
+- **暫定(partial)表示**: 発話が続いている間も `REALTIME_PARTIAL_INTERVAL`(既定2秒)ごとに未確定バッファを推論し、`{"type":"partial", start, text}` を送る。確定ではないため次の partial か segment で置き換えられ、保存対象にはならない。推論ロック使用中はスキップするベストエフォート(確定側・他セッション優先)。`0` で無効化
 - 18秒以上発話が続いたら途中でも強制推論(`MAX_BUFFER_SECONDS`)
 - 一時停止(pause)はそこまでのバッファを確定。再開(resume)時にクライアントが中断実時間 `gap` を渡し、サーバーが時刻オフセットに加算 → **時刻タグは録音開始からの実時間を維持**
 - WebSocket メッセージ仕様の正典は `server/realtime.py` のモジュール docstring
@@ -60,7 +62,7 @@ POST /api/jobs (multipart) → jobs テーブルに queued で登録、即 ID �
 
 - 元ファイルは完了時に削除し、結果(セグメント)だけを DB に残す
 - ジョブ状態: `queued → processing → done / error`
-- キューはインプロセスのためプロセス再起動で消える(DB 上は queued のまま残る)。スケール時は `jobs.py` を Redis + 別プロセスワーカーに差し替える
+- キューはインプロセスのためプロセス再起動で消えるが、**起動時に `jobs.requeue_stale_jobs()` が DB 上に queued / processing のまま残ったジョブを回収して再投入する**(元ファイルが残っていれば途中結果を破棄して最初からやり直し、無ければ error)。スケール時は `jobs.py` を Redis + 別プロセスワーカーに差し替える
 
 ### 2.3 話者分離(ダイアライゼーション)
 
@@ -76,7 +78,7 @@ Whisper / VAD の認識セグメントは細かくなりがちなので、**認�
 
 - UI: 結果画面の「発言の区切り」セレクタ(短い / 標準 / 長い)。選択は localStorage に保存
 - 結合ルール: 「同一話者」かつ「間隔が gap 未満」かつ「結合後が最大長・最大文字数以内」の連続セグメントを結合。時刻タグは結合ブロック先頭の時刻
-- パラメータ(gap/最大長/最大文字数): 短い=結合なし、標準=1.5s/30s/120字、長い=4s/60s/240字。定義は `web/src/lib.ts` と `server/exporters.py` の2箇所にあり、**変更時は両方を揃える**
+- パラメータ(gap/最大長/最大文字数): 短い=結合なし、標準=1.5s/30s/120字、長い=4s/60s/240字。**正典は `shared/merge_params.json` の1箇所**で、`web/src/lib.ts` と `server/exporters.py` の両方がこのファイルを読む(値の変更は JSON だけでよい。結合ロジック自体を変えるときは両実装を揃える)
 - 適用範囲: 画面表示とリアルタイムの TXT 保存はクライアント側で、ファイルの TXT エクスポートはサーバー側(`?granularity=`)で結合。SRT / VTT は字幕用途のため常に細かい粒度、JSON は生データ
 
 ### 2.5 認識精度向上(用語リスト・コンテキスト)
@@ -85,6 +87,20 @@ Whisper / VAD の認識セグメントは細かくなりがちなので、**認�
 - **コンテキスト** → `initial_prompt`(冒頭の文脈・文体)
 - どちらも「バイアス」であり確実な置換ではない。プロンプト実効長は約224トークンのため入力は1000文字に制限(`MAX_PROMPT_CHARS`)
 - **プリセット**: 名前付きの用語リスト+コンテキストの組を presets テーブルに保存。全利用者で共有。同名保存は上書き
+
+### 2.6 要約・議事録の生成(ローカル LLM 連携・任意機能)
+
+```
+POST /api/jobs/{id}/summaries {kind}   ← ファイル文字起こし(結果は summaries テーブルに保存)
+POST /api/summarize {kind, segments}   ← リアルタイム(クライアントのセグメントを直接渡す・保存なし)
+  → llm.build_transcript: 「長い」粒度で結合 + 話者氏名反映 + LLM_MAX_INPUT_CHARS で切り詰め
+  → llm.generate: OpenAI 互換 API ({LLM_API_URL}/chat/completions) に投げる
+```
+
+- **`LLM_API_URL` が未設定なら機能ごと無効**。`/api/health` の `llm.enabled` でフロントが UI を出し分ける。「完全ローカル」の前提を守るため、既定ではどこにも接続しない。Ollama / LM Studio / llama.cpp server などローカルの OpenAI 互換サーバーを指定する想定(外部 SaaS を指定しないこと)
+- kind は `summary`(要約)/ `minutes`(議事録)。プロンプトの正典は `server/llm.py` の `KINDS`
+- ジョブ紐付けの生成結果は summaries テーブルに保存され、同じ kind の再生成で上書き。ジョブ詳細(GET /api/jobs/{id})に `summaries` として同梱される
+- 生成はブロッキング(urllib)なので `asyncio.to_thread` 経由。推論の inference_lock とは無関係(LLM は別プロセス/別サーバー)
 
 ## 3. データベース(SQLite)
 
@@ -95,6 +111,7 @@ Whisper / VAD の認識セグメントは細かくなりがちなので、**認�
 | jobs | ファイル文字起こしのジョブ | id, filename, status, error, language, vocabulary, context, speaker_names(JSON), duration, progress, created_at |
 | segments | 文字起こし結果 | job_id, idx, start, end, text, speaker(1始まり/NULL) |
 | presets | 用語リスト等の共有プリセット | id, name(UNIQUE), vocabulary, context, updated_at |
+| summaries | LLM 生成の要約・議事録 | job_id, kind(summary/minutes), content, model, created_at(job_id×kind で1件、再生成は上書き) |
 
 マイグレーションは `init_db()` 内の `ALTER TABLE ... ADD COLUMN`(既存なら無視)方式。カラム追加時はここに追記する。
 
@@ -117,6 +134,7 @@ React 18 + Vite + TypeScript。ビルド成果物(`web/dist`)を FastAPI が配�
 | src/Upload.tsx | ファイル画面。アップロード・差分ポーリング・エクスポート |
 | src/PromptSettings.tsx | 用語リスト・コンテキスト入力 + プリセット管理。値は localStorage、プリセットはサーバー |
 | src/SpeakerNames.tsx | 話者仮名 → 氏名の一括振り分けパネル |
+| src/SummaryPanel.tsx | 要約・議事録の生成パネル(両画面共通、LLM 無効時は非表示) |
 | src/lib.ts | 型定義と共有ユーティリティ(時刻整形・話者ラベル等) |
 | public/pcm-worklet.js | AudioWorklet。マイク音声を 16kHz int16 PCM に変換 |
 
@@ -132,8 +150,12 @@ UI 文言は日本語。デザインは `src/styles.css` に集約(業務アプ�
 | WHISPER_DEVICE / WHISPER_COMPUTE_TYPE | auto | cuda + float16 で GPU 利用 |
 | JOB_WORKERS | 1 | ファイル文字起こしの並列数 |
 | MAX_REALTIME_SESSIONS | 2 | リアルタイム同時接続上限 |
+| REALTIME_PARTIAL_INTERVAL | 2.0 | リアルタイム暫定表示の間隔(秒)。0 で無効化 |
 | DIARIZATION | 1 | 話者分離の有効/無効 |
 | SPEAKER_THRESHOLD | 0.4 | 話者クラスタリングのしきい値 |
+| LLM_API_URL | (空=無効) | ローカル LLM の OpenAI 互換 API ベース URL(例: http://localhost:11434/v1) |
+| LLM_MODEL | qwen2.5:7b-instruct | 要約・議事録に使う LLM モデル名 |
+| LLM_TIMEOUT / LLM_MAX_INPUT_CHARS | 300 / 24000 | LLM 生成の待ち時間上限(秒)/ 入力文字数上限 |
 | DATA_DIR | ./data | アップロード先・SQLite の場所 |
 | HTTP(S)_PROXY / NO_PROXY | - | モデルダウンロード・ビルドに伝搬 |
 
@@ -152,9 +174,23 @@ UI 文言は日本語。デザインは `src/styles.css` に集約(業務アプ�
 4. 利用者数に応じて `JOB_WORKERS` / `MAX_REALTIME_SESSIONS` を調整
 5. スケールが必要なら `jobs.py` を Redis キュー + 別プロセスワーカーへ
 
-## 9. 既知の制約
+## 9. テスト
 
-- リアルタイムは発話終了後に確定する方式(逐字表示ではない)。字幕的な逐次表示が必要なら「暫定(partial)表示」の追加が次の拡張候補
+`tests/` に pytest スイートがある(モデル推論・モデルダウンロードは行わない。環境設定は `tests/conftest.py`)。
+
+```bash
+.venv/bin/pip install -r requirements-dev.txt
+.venv/bin/python -m pytest tests/
+```
+
+- 対象: exporters(結合・整形)/ db(マイグレーション含む)/ jobs(再起動リカバリ)/ API(バリデーション)/ llm(入力整形・エラー変換)
+- CI: `.github/workflows/ci.yml` が push / PR ごとに pytest とフロントのビルド(型チェック)を回す
+- 推論を含む end-to-end の確認は従来どおり手動(curl / Playwright、`WHISPER_MODEL=tiny` 推奨)
+
+## 10. 既知の制約
+
+- リアルタイムの暫定(partial)表示はベストエフォート(推論が混んでいるときはスキップされる)。確定は従来どおり発話終了後
 - 話者分離はベストエフォート。声質が近い話者は同一視されうる。会議録音(遠いマイク・被り)では精度が落ちる
 - 用語リストは認識バイアスであり確実な置換ではない。表記の強制統一は「文字起こし後の置換辞書」(未実装)で対応する想定
-- キューはインプロセス(再起動で消える)。queued のまま残ったジョブの自動再投入は未実装
+- 再起動時のジョブ再投入は「最初からやり直し」方式(Whisper は途中再開できないため、processing 途中のセグメントは破棄される)
+- 要約・議事録の品質はローカル LLM のモデル性能に依存する。長い会議は LLM_MAX_INPUT_CHARS で切り詰められる(分割要約は未実装)

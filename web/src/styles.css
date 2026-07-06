@@ -409,6 +409,32 @@ input[type="text"] {
   font-size: 0.85rem;
 }
 
+/* 発話中の暫定テキスト(確定セグメントが届いたら置き換わる) */
+.transcript .partial {
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* ---- 要約・議事録(ローカル LLM) ---- */
+.summary-result {
+  margin-top: 12px;
+}
+
+.summary-content {
+  background: var(--panel-sub);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px 16px;
+  margin: 6px 0 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.8;
+  max-height: 45vh;
+  overflow-y: auto;
+}
+
 .ts {
   color: var(--muted);
   font-family: ui-monospace, "SFMono-Regular", Consolas, monospace;

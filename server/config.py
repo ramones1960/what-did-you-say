@@ -34,6 +34,20 @@ SPEAKER_THRESHOLD = float(_env("SPEAKER_THRESHOLD", "0.4"))
 JOB_WORKERS = int(_env("JOB_WORKERS", "1"))
 MAX_REALTIME_SESSIONS = int(_env("MAX_REALTIME_SESSIONS", "2"))
 
+# リアルタイムの暫定(partial)表示: 発話が続いている間、この間隔(秒)で
+# 未確定バッファを推論して暫定テキストを送る。0 で無効化。
+# 推論が1本に直列化されている前提のため、混んでいるときは自動でスキップされる
+REALTIME_PARTIAL_INTERVAL = float(_env("REALTIME_PARTIAL_INTERVAL", "2.0"))
+
+# ローカル LLM 連携(要約・議事録の生成)。LLM_API_URL が空なら機能ごと無効。
+# OpenAI 互換 API のベース URL を指定する(例: Ollama → http://localhost:11434/v1)。
+# 「完全ローカル」の前提を守るため、既定では何にも接続しない
+LLM_API_URL = _env("LLM_API_URL", "").rstrip("/")
+LLM_MODEL = _env("LLM_MODEL", "qwen2.5:7b-instruct")
+LLM_API_KEY = _env("LLM_API_KEY", "")          # ローカルでも認証を要求するサーバー向け
+LLM_TIMEOUT = float(_env("LLM_TIMEOUT", "300"))  # 生成の待ち時間上限(秒)
+LLM_MAX_INPUT_CHARS = int(_env("LLM_MAX_INPUT_CHARS", "24000"))  # 入力文字数上限(超過分は切り詰め)
+
 # アップロード上限(バイト)
 MAX_UPLOAD_BYTES = int(_env("MAX_UPLOAD_BYTES", str(2 * 1024 * 1024 * 1024)))
 
