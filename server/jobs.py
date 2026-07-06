@@ -11,8 +11,10 @@
 (進捗はセグメント末尾時刻 / 音声全長で 0.0〜1.0)
 
 v1 はインプロセスの asyncio.Queue + ワーカータスク。プロセス再起動で
-キュー内容は失われる(DB 上は queued のまま残る)。社内公開でスケール
-させる場合は、このモジュールを Redis キュー + 別プロセスワーカーに
+キュー内容は失われるため、起動時に requeue_stale_jobs() が DB 上に
+queued / processing のまま残ったジョブを回収して再投入する(元ファイルが
+残っていれば最初からやり直し、消えていれば error にする)。社内公開で
+スケールさせる場合は、このモジュールを Redis キュー + 別プロセスワーカーに
 差し替える(インターフェース: enqueue / start_workers / stop_workers)。
 """
 
@@ -42,8 +44,36 @@ async def enqueue(job_id: str) -> None:
     await _queue.put(job_id)
 
 
+def requeue_stale_jobs() -> list[str]:
+    """再起動で宙に浮いたジョブ(queued / processing)を回収する。
+
+    キューはインプロセスのため、再起動すると DB 上のジョブとキューの中身が
+    食い違う。元ファイルが残っていれば途中結果を破棄して queued に戻し、
+    再投入対象のジョブ ID リストを返す。元ファイルが無い(異常系)ジョブは
+    再開できないので error にする。アプリ起動時に start_workers() から呼ばれる。
+    """
+    requeued: list[str] = []
+    for job in db.list_jobs_by_status(("queued", "processing")):
+        job_id = job["id"]
+        if upload_path(job_id).exists():
+            db.reset_job(job_id)
+            requeued.append(job_id)
+            logger.info("job %s を再投入します(再起動により中断)", job_id)
+        else:
+            db.set_status(
+                job_id, "error", "サーバー再起動により中断されました。再度アップロードしてください"
+            )
+            logger.warning("job %s は元ファイルが無いため再開できません", job_id)
+    return requeued
+
+
 def start_workers() -> None:
-    """JOB_WORKERS 個のワーカータスクを起動する(アプリ起動時に呼ばれる)。"""
+    """JOB_WORKERS 個のワーカータスクを起動する(アプリ起動時に呼ばれる)。
+
+    起動前に、前回の実行から DB に残ったジョブをキューへ再投入する。
+    """
+    for job_id in requeue_stale_jobs():
+        _queue.put_nowait(job_id)
     for i in range(config.JOB_WORKERS):
         _workers.append(asyncio.create_task(_worker_loop(i)))
 

@@ -41,6 +41,21 @@ export interface Job {
   created_at: number;
   speaker_names?: string | null;
   segments?: Segment[];
+  summaries?: Record<string, SummaryResult>;
+}
+
+/** ローカル LLM 連携の状態(GET /api/health の llm フィールド)。 */
+export interface LlmInfo {
+  enabled: boolean;
+  model: string | null;
+}
+
+/** LLM が生成した要約・議事録(kind: summary / minutes)。 */
+export interface SummaryResult {
+  kind: string;
+  content: string;
+  model: string;
+  created_at?: number;
 }
 
 export function hms(seconds: number): string {
@@ -73,7 +88,9 @@ export const LANGUAGES: [string, string][] = [
 
 // --- 発言の区切り(セグメント結合) ---
 // 認識は細かい粒度のまま保存し、表示・TXT出力時に結合する。
-// ルールとパラメータはサーバー側 (server/exporters.py) と揃えること。
+// パラメータの正典は shared/merge_params.json(サーバー側 server/exporters.py も
+// 同じファイルを読む)。結合ルールのロジックは exporters.merge_segments と揃えること。
+import MERGE_PARAMS_JSON from "../../shared/merge_params.json";
 
 export type Granularity = "short" | "standard" | "long";
 
@@ -83,12 +100,14 @@ export const GRANULARITIES: [Granularity, string][] = [
   ["long", "長い"],
 ];
 
-/** 結合パラメータ: [結合する無音間隔(秒), 結合後の最大長(秒), 最大文字数] */
-const MERGE_PARAMS: Record<Granularity, [number, number, number] | null> = {
-  short: null, // 結合しない(認識されたままの粒度)
-  standard: [1.5, 30, 120],
-  long: [4.0, 60, 240],
-};
+/** 結合パラメータ: 結合する無音間隔(秒)・結合後の最大長(秒)・最大文字数 */
+interface MergeParam {
+  gap: number;
+  max_duration: number;
+  max_chars: number;
+}
+// short は null = 結合しない(認識されたままの粒度)
+const MERGE_PARAMS = MERGE_PARAMS_JSON as Record<Granularity, MergeParam | null>;
 
 /**
  * テキストを連結する。欧文どうし(前が ASCII で終わり、次が英数字で始まる)
@@ -110,7 +129,7 @@ function joinText(a: string, b: string): string {
 export function mergeSegments(segments: Segment[], level: Granularity): Segment[] {
   const params = MERGE_PARAMS[level];
   if (!params || segments.length === 0) return segments;
-  const [gap, maxDur, maxChars] = params;
+  const { gap, max_duration: maxDur, max_chars: maxChars } = params;
 
   const merged: Segment[] = [];
   for (const seg of segments) {

@@ -6,17 +6,23 @@
  * 消えるため、両方をマウントしたまま hidden 属性で表示だけ切り替える。
  */
 import { useEffect, useState } from "react";
+import { LlmInfo } from "./lib";
 import Recorder from "./Recorder";
 import Upload from "./Upload";
 
 export default function App() {
   const [tab, setTab] = useState<"realtime" | "file">("realtime");
   const [model, setModel] = useState("");
+  // ローカル LLM 連携(要約・議事録)の有効状態。無効なら関連 UI を出さない
+  const [llm, setLlm] = useState<LlmInfo | null>(null);
 
   useEffect(() => {
     fetch("/api/health")
       .then((r) => r.json())
-      .then((h) => setModel(h.model ?? ""))
+      .then((h) => {
+        setModel(h.model ?? "");
+        setLlm(h.llm ?? null);
+      })
       .catch(() => {});
   }, []);
 
@@ -66,14 +72,14 @@ export default function App() {
           <p className="tab-lead">
             マイクの音声を発話の区切りごとにテキスト化します。結果には時刻と話者のタグが付き、停止後にテキストファイルとして保存できます。
           </p>
-          <Recorder />
+          <Recorder llm={llm} />
         </div>
         <div hidden={tab !== "file"}>
           <p className="tab-lead">
             音声・動画ファイルをアップロードして文字起こしします。処理はサーバー内で順番に実行され、結果は
             TXT / SRT / VTT / JSON 形式でダウンロードできます。
           </p>
-          <Upload />
+          <Upload llm={llm} />
         </div>
       </main>
 

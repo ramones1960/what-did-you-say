@@ -15,6 +15,7 @@ import {
   Granularity,
   Job,
   LANGUAGES,
+  LlmInfo,
   SpeakerNames,
   hms,
   loadGranularity,
@@ -25,8 +26,9 @@ import {
 } from "./lib";
 import PromptSettings, { usePromptSettings } from "./PromptSettings";
 import SpeakerNamesPanel from "./SpeakerNames";
+import SummaryPanel from "./SummaryPanel";
 
-export default function Upload() {
+export default function Upload({ llm }: { llm: LlmInfo | null }) {
   const [jobs, setJobs] = useState<Job[]>([]);
   const [active, setActive] = useState<Job | null>(null);
   const [language, setLanguage] = useState("");
@@ -279,6 +281,17 @@ export default function Upload() {
             onSave={saveNames}
             saving={savingNames}
           />
+          {/* 完了後にローカル LLM で要約・議事録を生成(結果はジョブに保存される) */}
+          {active.status === "done" && (
+            <SummaryPanel
+              llm={llm}
+              segments={active.segments ?? []}
+              names={names}
+              jobId={active.id}
+              initial={active.summaries}
+              filenameBase={active.filename.replace(/\.[^.]+$/, "") || "transcript"}
+            />
+          )}
           <div className="transcript">
             {displaySegments.map((s) => (
               <p key={s.start + s.text}>

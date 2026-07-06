@@ -1,0 +1,5 @@
+{
+  "short": null,
+  "standard": { "gap": 1.5, "max_duration": 30, "max_chars": 120 },
+  "long": { "gap": 4.0, "max_duration": 60, "max_chars": 240 }
+}
