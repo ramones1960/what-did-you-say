@@ -22,6 +22,35 @@ _model_lock = threading.Lock()
 inference_lock = threading.Lock()
 
 
+def explain_inference_error(e: Exception) -> str:
+    """推論まわりの低レベル例外を、対処法つきのユーザー向け文言に変換する。
+
+    GPU 構成(WHISPER_DEVICE=cuda)で起きがちな失敗は原文だけでは原因が
+    分かりにくいため、代表的なパターンを判別して日本語の説明を付ける。
+    該当しない例外は原文をそのまま返す。
+    """
+    msg = str(e)
+    low = msg.lower()
+    if "out of memory" in low:
+        return (
+            "GPU のメモリ (VRAM) が不足しています。WHISPER_COMPUTE_TYPE=int8_float16 "
+            "にするか、WHISPER_MODEL を小さいもの (medium / small) に変更してください"
+            f"(元のエラー: {msg})"
+        )
+    if "cudnn" in low or "cublas" in low:
+        return (
+            "GPU 用ライブラリ (cuBLAS / cuDNN) を読み込めませんでした。GPU 対応イメージの"
+            "再ビルド (docker compose -f docker-compose.yml -f docker-compose.gpu.yml "
+            f"up -d --build) が必要です(元のエラー: {msg})"
+        )
+    if "cuda" in low:
+        return (
+            "GPU での推論に失敗しました。WHISPER_DEVICE=cpu で CPU 実行に切り替えると"
+            f"原因を切り分けられます(元のエラー: {msg})"
+        )
+    return msg
+
+
 def get_model() -> WhisperModel:
     global _model
     with _model_lock:

@@ -147,7 +147,7 @@ UI 文言は日本語。デザインは `src/styles.css` に集約(業務アプ�
 | 変数 | 既定 | 意味 |
 |---|---|---|
 | WHISPER_MODEL | small | Whisper モデル名(tiny/base/small/medium/large-v3) |
-| WHISPER_DEVICE / WHISPER_COMPUTE_TYPE | auto | cuda + float16 で GPU 利用 |
+| WHISPER_DEVICE / WHISPER_COMPUTE_TYPE | auto | cuda + float16 で GPU 利用(VRAM 不足時は int8_float16) |
 | JOB_WORKERS | 1 | ファイル文字起こしの並列数 |
 | MAX_REALTIME_SESSIONS | 2 | リアルタイム同時接続上限 |
 | REALTIME_PARTIAL_INTERVAL | 2.0 | リアルタイム暫定表示の間隔(秒)。0 で無効化 |

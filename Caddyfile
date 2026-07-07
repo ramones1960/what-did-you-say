@@ -5,6 +5,18 @@
 # - 社内公開時: SITE_ADDRESS をホスト名にし、`tls internal` のまま社内CAに
 #   Caddy のルート証明書を配布するか、社内CA発行の証明書を指定する
 
+# HTTP/3 (QUIC) は無効化する。docker-compose は 443/TCP しか公開しておらず
+# HTTP/3 は使われないうえ、起動時に quic-go の
+# 「failed to sufficiently increase receive buffer size」警告
+# (UDP バッファサイズ不足。文字起こしの失敗とは無関係) がログに出るため。
+# HTTP/3 を使いたい場合は protocols に h3 を足し、compose で 443/udp を公開し、
+# ホストの net.core.rmem_max / wmem_max を引き上げる
+{
+	servers {
+		protocols h1 h2
+	}
+}
+
 {$SITE_ADDRESS:localhost} {
 	tls internal
 	reverse_proxy app:8000
