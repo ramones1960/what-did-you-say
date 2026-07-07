@@ -1,11 +1,21 @@
 # NVIDIA GPU を使う場合のオーバーレイ。
-# 使い方: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+# 使い方: docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 # 前提: WSL2 + NVIDIA ドライバ + NVIDIA Container Toolkit
+#
+# VRAM の目安: large-v3 は float16 で約 5GB 必要。VRAM が足りず
+# 「CUDA failed with error out of memory」になる場合は .env で調整する:
+#   WHISPER_COMPUTE_TYPE=int8_float16   # 必要 VRAM がほぼ半減(精度への影響は小)
+#   WHISPER_MODEL=medium                # モデル自体を小さくする
 services:
   app:
+    build:
+      args:
+        # cuBLAS / cuDNN を含めてビルドする(Dockerfile 参照)。
+        # CPU 用イメージからの切替時は --build での再ビルドが必要
+        - GPU=1
     environment:
       WHISPER_DEVICE: cuda
-      WHISPER_COMPUTE_TYPE: float16
+      WHISPER_COMPUTE_TYPE: ${WHISPER_COMPUTE_TYPE:-float16}
       WHISPER_MODEL: ${WHISPER_MODEL:-large-v3}
     deploy:
       resources:

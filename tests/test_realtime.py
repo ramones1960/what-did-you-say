@@ -14,9 +14,16 @@ from server import config, realtime, transcriber
 class FakeWS:
     def __init__(self):
         self.sent = []
+        self.closed = False
+
+    async def accept(self):
+        pass
 
     async def send_json(self, msg):
         self.sent.append(msg)
+
+    async def close(self):
+        self.closed = True
 
 
 @pytest.fixture()
@@ -82,6 +89,27 @@ class TestMaybeSendPartial:
         await session._process(force=True)
         assert {"type": "partial", "start": 0.0, "text": ""} in session.ws.sent
         assert session.partial_shown is False
+
+
+class TestHandleWebsocket:
+    @pytest.mark.anyio
+    async def test_推論エラーをクライアントへ通知してから閉じる(self, monkeypatch):
+        # GPU の VRAM 不足などでセッションが例外死したとき、黙って切断せず
+        # error メッセージ(対処法つき)を送ってから閉じることを確認する
+        class FailingSession:
+            def __init__(self, ws):
+                pass
+
+            async def run(self):
+                raise RuntimeError("CUDA failed with error out of memory")
+
+        monkeypatch.setattr(realtime, "RealtimeSession", FailingSession)
+        ws = FakeWS()
+        await realtime.handle_websocket(ws)
+        assert len(ws.sent) == 1
+        assert ws.sent[0]["type"] == "error"
+        assert "VRAM" in ws.sent[0]["message"]
+        assert ws.closed is True
 
 
 @pytest.fixture()

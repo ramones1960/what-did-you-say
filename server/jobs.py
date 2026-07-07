@@ -164,7 +164,11 @@ def _process_job(job_id: str) -> None:
             )
         except Exception as e:
             logger.exception("transcription failed for job %s", job_id)
-            db.set_status(job_id, "error", f"文字起こしに失敗しました: {e}")
+            db.set_status(
+                job_id,
+                "error",
+                f"文字起こしに失敗しました: {transcriber.explain_inference_error(e)}",
+            )
             return
 
     db.set_progress(job_id, 1.0)

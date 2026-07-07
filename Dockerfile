@@ -19,6 +19,19 @@ RUN apt-get update \
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
+# GPU=1 のとき、faster-whisper (CTranslate2) の CUDA 実行に必要な
+# cuBLAS / cuDNN を pip で追加する(docker-compose.gpu.yml が指定する)。
+# ベースイメージは CUDA を含まない slim のため、これが無いと
+# WHISPER_DEVICE=cuda は推論時のライブラリロードで失敗する。
+# NVIDIA Container Toolkit が注入するのはドライバ層のみで cuBLAS/cuDNN は含まれない
+ARG GPU=0
+RUN if [ "$GPU" = "1" ]; then \
+        pip install --no-cache-dir nvidia-cublas-cu12 "nvidia-cudnn-cu12==9.*"; \
+    fi
+# CTranslate2 が cuBLAS/cuDNN を見つけられるようにする(CPU ビルドでは
+# ディレクトリが存在しないだけで無害)
+ENV LD_LIBRARY_PATH=/usr/local/lib/python3.11/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.11/site-packages/nvidia/cudnn/lib
+
 COPY server/ ./server/
 COPY shared/ ./shared/
 COPY --from=web /src/web/dist ./web/dist

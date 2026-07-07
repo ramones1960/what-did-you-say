@@ -54,7 +54,21 @@ WSL2 + NVIDIA ドライバ + [NVIDIA Container Toolkit](https://docs.nvidia.com/
 docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
 ```
 
-GPU 構成では既定モデルが `large-v3`(高精度)になります。
+GPU 構成では既定モデルが `large-v3`(高精度)になり、GPU 推論に必要な
+cuBLAS / cuDNN を含めてイメージがビルドされます(CPU 用イメージを既に
+作っている場合も `--build` での再ビルドが必要です)。
+
+**GPU でエラーになる場合:**
+
+- `CUDA failed with error out of memory` — GPU のメモリ(VRAM)不足です。
+  `large-v3` の `float16` 実行には約 5GB の VRAM が必要です。`.env` で
+  `WHISPER_COMPUTE_TYPE=int8_float16`(必要 VRAM がほぼ半減)にするか、
+  `WHISPER_MODEL=medium` などモデルを小さくしてください
+- cuBLAS / cuDNN のロードエラー — GPU 用ライブラリが入っていない古いイメージです。
+  上記コマンドの `--build` 付きで再ビルドしてください
+- caddy のログに出る `failed to sufficiently increase receive buffer size`(quic-go の
+  UDP バッファ警告)は HTTP/3 に関するもので、文字起こしの失敗とは無関係です
+  (現在は HTTP/3 を無効化しているため出力されません)
 
 ### プロキシ環境での利用
 
@@ -82,7 +96,7 @@ NO_PROXY=localhost,127.0.0.1
 |---|---|---|
 | `WHISPER_MODEL` | `small` | `tiny` / `base` / `small` / `medium` / `large-v3` など。CPU なら `small` 前後、GPU なら `large-v3` 推奨 |
 | `WHISPER_DEVICE` | `auto` | `cpu` / `cuda` |
-| `WHISPER_COMPUTE_TYPE` | `auto` | `int8`(CPU向け)/ `float16`(GPU向け) |
+| `WHISPER_COMPUTE_TYPE` | `auto` | `int8`(CPU向け)/ `float16`(GPU向け)/ `int8_float16`(GPUでVRAM節約) |
 | `WHISPER_LANGUAGE` | (自動判定) | 既定の言語コード(例: `ja`) |
 | `JOB_WORKERS` | `1` | ファイル文字起こしの並列ワーカー数 |
 | `MAX_REALTIME_SESSIONS` | `2` | リアルタイム文字起こしの同時セッション上限 |

@@ -30,7 +30,7 @@ Whisper 自体はストリーミング非対応のため、この
         確定ではないため保存対象にしないこと
     {"type": "paused"}                   pause の完了通知
     {"type": "done"}                     stop の完了通知(この後クローズ想定)
-    {"type": "error", "message": "..."}  受理拒否など(送信後クローズ)
+    {"type": "error", "message": "..."}  受理拒否・推論エラーなど(送信後クローズ)
 
 対応するクライアント実装は web/src/Recorder.tsx。
 """
@@ -259,8 +259,21 @@ async def handle_websocket(ws: WebSocket) -> None:
         await RealtimeSession(ws).run()
     except WebSocketDisconnect:
         pass
-    except Exception:
+    except Exception as e:
         logger.exception("realtime session error")
+        # 推論エラー(GPU のメモリ不足など)を黙って切断せず、原因と対処法を
+        # クライアントに伝えてから閉じる(切断済みなら送信失敗を握りつぶす)
+        try:
+            await ws.send_json(
+                {
+                    "type": "error",
+                    "message": "文字起こしに失敗しました: "
+                    + transcriber.explain_inference_error(e),
+                }
+            )
+            await ws.close()
+        except Exception:
+            pass
     finally:
         async with _sessions_lock:
             _sessions -= 1
