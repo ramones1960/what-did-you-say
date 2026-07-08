@@ -82,6 +82,60 @@ class TestJobDetail:
         assert client.delete(f"/api/jobs/{job_id}").status_code == 200
         assert db.get_job(job_id) is None
 
+    def test_中断ジョブは削除できる(self, client):
+        job_id = db.create_job("a.mp3", None)
+        db.set_status(job_id, "canceled")
+        assert client.delete(f"/api/jobs/{job_id}").status_code == 200
+        assert db.get_job(job_id) is None
+
+
+class TestCancelJob:
+    def test_待機中のジョブは即座に中断される(self, client):
+        job_id = db.create_job("a.mp3", None)  # queued
+        res = client.post(f"/api/jobs/{job_id}/cancel")
+        assert res.status_code == 200
+        assert res.json()["status"] == "canceled"
+        assert db.get_job(job_id)["status"] == "canceled"
+        assert job_id in jobs._cancel_requested
+        jobs._cancel_requested.discard(job_id)
+
+    def test_処理中は中断要求のみ_状態はワーカーが変える(self, client):
+        job_id = db.create_job("a.mp3", None)
+        db.set_status(job_id, "processing")
+        res = client.post(f"/api/jobs/{job_id}/cancel")
+        assert res.status_code == 200
+        assert res.json()["status"] == "canceling"
+        assert job_id in jobs._cancel_requested
+        # 状態はワーカーが後で canceled にするため、この時点では processing のまま
+        assert db.get_job(job_id)["status"] == "processing"
+        jobs._cancel_requested.discard(job_id)
+
+    def test_完了ジョブは中断できない(self, client):
+        job_id = db.create_job("a.mp3", None)
+        db.set_status(job_id, "done")
+        assert client.post(f"/api/jobs/{job_id}/cancel").status_code == 409
+
+    def test_存在しないジョブは404(self, client):
+        assert client.post("/api/jobs/nonexistent/cancel").status_code == 404
+
+
+class TestWords:
+    def test_頻出単語を回数つきで返す(self, client):
+        job_id = db.create_job("a.mp3", None)
+        db.add_segment(job_id, 0, 0, 1, "基幹システムの刷新")
+        db.add_segment(job_id, 1, 1, 2, "基幹システムを検討")
+        body = client.get(f"/api/jobs/{job_id}/words?min_count=2").json()
+        counts = {w["word"]: w["count"] for w in body["words"]}
+        assert counts["基幹"] == 2
+        assert counts["システム"] == 2
+
+    def test_存在しないジョブは404(self, client):
+        assert client.get("/api/jobs/nonexistent/words").status_code == 404
+
+    def test_セグメントが無ければ空(self, client):
+        job_id = db.create_job("a.mp3", None)
+        assert client.get(f"/api/jobs/{job_id}/words").json()["words"] == []
+
 
 class TestSpeakers:
     def test_話者マッピングの保存と正規化(self, client):

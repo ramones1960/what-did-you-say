@@ -5,8 +5,10 @@
   POST   /api/jobs                      ファイルアップロード → ジョブ作成
   GET    /api/jobs                      ジョブ一覧(新しい順)
   GET    /api/jobs/{id}                 ジョブ詳細 + セグメント(ポーリング用)
+  POST   /api/jobs/{id}/cancel          処理中・待機中のジョブを中断
   DELETE /api/jobs/{id}                 ジョブ削除
   PUT    /api/jobs/{id}/speakers        話者番号→氏名マッピングの保存
+  GET    /api/jobs/{id}/words           頻出単語の一覧(用語リスト調整用)
   GET    /api/jobs/{id}/export          TXT / SRT / VTT / JSON エクスポート
   POST   /api/jobs/{id}/summaries       LLM で要約 / 議事録を生成して保存(llm.py)
   POST   /api/summarize                 セグメントを直接渡して LLM 生成(リアルタイム用・保存なし)
@@ -31,7 +33,7 @@ import anyio
 from fastapi import Body, Depends, FastAPI, Form, HTTPException, UploadFile, WebSocket
 from fastapi.responses import FileResponse, JSONResponse, Response
 
-from . import auth, config, db, exporters, jobs, llm, realtime
+from . import auth, config, db, exporters, jobs, llm, realtime, wordfreq
 
 logging.basicConfig(level=logging.INFO)
 
@@ -140,11 +142,34 @@ async def get_job(
     return job
 
 
+@app.post("/api/jobs/{job_id}/cancel")
+async def cancel_job(
+    job_id: str, user: auth.User = Depends(auth.get_current_user)
+) -> dict:
+    """処理中・待機中のジョブを中断する。
+
+    待機中(queued)はその場で canceled にし、処理中(processing)は中断を
+    要求してワーカーが次のセグメント境界で止める(数秒の遅延がありうる)。
+    途中まで確定した結果は残るため、そのまま確認・エクスポートできる。
+    """
+    job = db.get_job(job_id)
+    if job is None:
+        raise HTTPException(404, "ジョブが見つかりません")
+    if job["status"] not in ("queued", "processing"):
+        raise HTTPException(409, "処理中・待機中のジョブのみ中断できます")
+    jobs.request_cancel(job_id)
+    if job["status"] == "queued":
+        # まだワーカーに渡っていないので即座に反映する(UI 応答性のため)。
+        # 元ファイルの削除はワーカーがキューから取り出したときに行う。
+        db.set_status(job_id, "canceled")
+    return {"status": "canceled" if job["status"] == "queued" else "canceling"}
+
+
 @app.delete("/api/jobs/{job_id}")
 async def remove_job(
     job_id: str, user: auth.User = Depends(auth.get_current_user)
 ) -> dict:
-    """完了・エラーのジョブを結果ごと削除する(処理中は 409)。"""
+    """完了・エラー・中断のジョブを結果ごと削除する(処理中・待機中は 409)。"""
     job = db.get_job(job_id)
     if job is None:
         raise HTTPException(404, "ジョブが見つかりません")
@@ -172,6 +197,34 @@ async def set_speakers(
             cleaned[key] = value.strip()
     db.set_speaker_names(job_id, json.dumps(cleaned, ensure_ascii=False))
     return {"speaker_names": cleaned}
+
+
+# 頻出単語一覧の既定・上限(異常に大きなリクエストを避ける)
+MAX_WORDS_LIMIT = 500
+
+
+@app.get("/api/jobs/{job_id}/words")
+async def job_words(
+    job_id: str,
+    min_count: int = 2,
+    limit: int = 100,
+    user: auth.User = Depends(auth.get_current_user),
+) -> dict:
+    """文字起こし結果に頻出する単語を出現回数つきで返す。
+
+    認識が怪しい語を用語リストに足して再実行する際のヒント用。漢字語・
+    カタカナ語・英数字語のみを対象にする(仕様は wordfreq.py 参照)。
+    min_count 未満は除外し、多い順に最大 limit 件を返す。
+    """
+    if db.get_job(job_id) is None:
+        raise HTTPException(404, "ジョブが見つかりません")
+    texts = [s["text"] for s in db.get_segments(job_id)]
+    words = wordfreq.count_words(
+        texts,
+        min_count=max(1, min_count),
+        limit=max(1, min(limit, MAX_WORDS_LIMIT)),
+    )
+    return {"words": words}
 
 
 @app.get("/api/jobs/{job_id}/export")

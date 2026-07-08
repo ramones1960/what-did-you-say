@@ -2,12 +2,15 @@
  * ファイルから文字起こしする画面。
  *
  * 流れ:
- *   1. ファイル選択 or ドラッグ&ドロップ → POST /api/jobs (multipart)
- *   2. 返ってきたジョブ ID を「表示中ジョブ (active)」として開く
- *   3. 処理中は GET /api/jobs/{id}?segments_from=N を1.5秒間隔でポーリングし、
- *      新しく確定したセグメントだけを差分で受け取って追記する
- *   4. 完了後は話者の氏名設定 (PUT /api/jobs/{id}/speakers) と
- *      エクスポート (GET /api/jobs/{id}/export?format=...) が使える
+ *   1. ファイル選択 or ドラッグ&ドロップ → 選択中ファイルとして保留(まだ送らない)
+ *   2. 言語・用語リスト等を設定してから「文字起こしを開始」→ POST /api/jobs
+ *   3. 返ってきたジョブ ID を「表示中ジョブ (active)」として開く
+ *   4. 処理中は GET /api/jobs/{id}?segments_from=N を1.5秒間隔でポーリングし、
+ *      新しく確定したセグメントだけを差分で受け取って追記する。
+ *      途中で「中断」→ POST /api/jobs/{id}/cancel で打ち切れる
+ *   5. 完了後は話者の氏名設定 (PUT /api/jobs/{id}/speakers)、
+ *      エクスポート (GET /api/jobs/{id}/export?format=...)、
+ *      頻出単語の集計 (GET /api/jobs/{id}/words) が使える
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -27,6 +30,9 @@ import {
 import PromptSettings, { usePromptSettings } from "./PromptSettings";
 import SpeakerNamesPanel from "./SpeakerNames";
 import SummaryPanel from "./SummaryPanel";
+import WordFrequencies from "./WordFrequencies";
+
+const MAX_PROMPT_CHARS = 1000;
 
 export default function Upload({ llm }: { llm: LlmInfo | null }) {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -34,6 +40,8 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
   const [language, setLanguage] = useState("");
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
+  const [pending, setPending] = useState<File | null>(null); // 開始待ちのファイル
+  const [uploading, setUploading] = useState(false);
   const [prompt, setPrompt] = usePromptSettings();
   const [names, setNames] = useState<SpeakerNames>({});
   const [savingNames, setSavingNames] = useState(false);
@@ -76,25 +84,63 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
     return () => window.clearInterval(pollRef.current);
   }, [active?.id, active?.status, active?.segments?.length, refreshJobs]);
 
-  /** ファイルをアップロードしてジョブを作成し、その結果画面を開く。 */
-  async function upload(file: File) {
+  /** 選択中のファイルをアップロードしてジョブを作成し、その結果画面を開く。 */
+  async function startTranscription() {
+    if (!pending || uploading) return;
     setError("");
-    const form = new FormData();
-    form.append("file", file);
-    form.append("vocabulary", prompt.vocabulary);
-    form.append("context", prompt.context);
-    const res = await fetch(`/api/jobs?language=${encodeURIComponent(language)}`, {
-      method: "POST",
-      body: form,
-    });
+    setUploading(true);
+    try {
+      const form = new FormData();
+      form.append("file", pending);
+      form.append("vocabulary", prompt.vocabulary);
+      form.append("context", prompt.context);
+      const res = await fetch(`/api/jobs?language=${encodeURIComponent(language)}`, {
+        method: "POST",
+        body: form,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        setError(body?.detail ?? `アップロードに失敗しました (${res.status})`);
+        return;
+      }
+      const { id } = await res.json();
+      setPending(null); // 開始したので選択を解除
+      await refreshJobs();
+      await openJob(id);
+    } finally {
+      setUploading(false);
+    }
+  }
+
+  /** 処理中・待機中のジョブを中断する。途中までの結果は残る。 */
+  async function cancelJob(id: string) {
+    const res = await fetch(`/api/jobs/${id}/cancel`, { method: "POST" });
     if (!res.ok) {
-      const body = await res.json().catch(() => null);
-      setError(body?.detail ?? `アップロードに失敗しました (${res.status})`);
+      setError("中断に失敗しました");
       return;
     }
-    const { id } = await res.json();
     await refreshJobs();
-    await openJob(id);
+    // 表示中ジョブなら最新状態を取り込む(ポーリングも状態に応じて止まる)
+    if (active?.id === id) {
+      const fresh = await fetch(`/api/jobs/${id}`);
+      if (fresh.ok) setActive(await fresh.json());
+    }
+  }
+
+  /** 頻出単語を用語リストに追記する(重複・文字数上限を考慮)。 */
+  function addVocabularyWord(word: string) {
+    const terms = new Set(
+      prompt.vocabulary.split(/[\n,、]/).map((t) => t.trim()).filter(Boolean),
+    );
+    if (terms.has(word)) return;
+    const base = prompt.vocabulary.replace(/\s+$/, "");
+    const next = base ? `${base}\n${word}` : word;
+    if (next.length > MAX_PROMPT_CHARS) {
+      setError(`用語リストが${MAX_PROMPT_CHARS}文字の上限に達しています`);
+      return;
+    }
+    setError("");
+    setPrompt({ ...prompt, vocabulary: next });
   }
 
   /** ジョブを開いて表示する。保存済みの話者氏名マッピングも復元する。 */
@@ -136,7 +182,10 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
     e.preventDefault();
     setDragging(false);
     const file = e.dataTransfer.files[0];
-    if (file) upload(file);
+    if (file) {
+      setError("");
+      setPending(file);
+    }
   }
 
   const statusLabel: Record<Job["status"], string> = {
@@ -144,7 +193,10 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
     processing: "処理中",
     done: "完了",
     error: "エラー",
+    canceled: "中断",
   };
+
+  const isRunning = (s: Job["status"]) => s === "queued" || s === "processing";
 
   return (
     <section>
@@ -156,7 +208,7 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
             </option>
           ))}
         </select>
-        <label className="primary button">
+        <label className="button">
           ファイルを選択
           <input
             type="file"
@@ -164,7 +216,10 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
             hidden
             onChange={(e) => {
               const f = e.target.files?.[0];
-              if (f) upload(f);
+              if (f) {
+                setError("");
+                setPending(f);
+              }
               e.target.value = "";
             }}
           />
@@ -184,9 +239,28 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
       >
         <strong>音声・動画ファイルをここにドラッグ&ドロップ</strong>
         <span className="hint">
-          対応形式: mp3 / wav / m4a / flac / mp4 / mov / mkv / webm など。動画は音声のみを抽出して処理します。
+          対応形式: mp3 / wav / m4a / flac / mp4 / mov / mkv / webm など。動画は音声のみを抽出して処理します。ファイルを選ぶと下に開始ボタンが出ます。
         </span>
       </div>
+
+      {pending && (
+        <div className="pending-file">
+          <span className="pending-name">
+            選択中: <strong>{pending.name}</strong>
+          </span>
+          <span className="spacer" />
+          <button
+            className="primary"
+            onClick={startTranscription}
+            disabled={uploading}
+          >
+            {uploading ? "アップロード中…" : "文字起こしを開始"}
+          </button>
+          <button className="small" onClick={() => setPending(null)} disabled={uploading}>
+            クリア
+          </button>
+        </div>
+      )}
 
       {error && <p className="error">{error}</p>}
 
@@ -216,7 +290,17 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
                 <td>{j.language ?? "-"}</td>
                 <td>{j.duration ? hms(j.duration) : "-"}</td>
                 <td>
-                  {j.status !== "processing" && j.status !== "queued" && (
+                  {isRunning(j.status) ? (
+                    <button
+                      className="small"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        cancelJob(j.id);
+                      }}
+                    >
+                      中断
+                    </button>
+                  ) : (
                     <button
                       className="small"
                       onClick={(e) => {
@@ -238,8 +322,11 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
         <div className="result">
           <div className="toolbar">
             <strong>{active.filename}</strong>
-            {(active.status === "processing" || active.status === "queued") && (
-              <progress value={active.progress} max={1} />
+            {isRunning(active.status) && <progress value={active.progress} max={1} />}
+            {isRunning(active.status) && (
+              <button className="small" onClick={() => cancelJob(active.id)}>
+                中断
+              </button>
             )}
             <span className="spacer" />
             <label className="inline-field">
@@ -274,6 +361,11 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
             ))}
           </div>
           {active.status === "error" && <p className="error">{active.error}</p>}
+          {active.status === "canceled" && (
+            <p className="status-note">
+              この文字起こしは中断されました。ここまでの結果は保存されています。
+            </p>
+          )}
           <SpeakerNamesPanel
             speakers={uniqueSpeakers(active.segments ?? [])}
             names={names}
@@ -281,6 +373,15 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
             onSave={saveNames}
             saving={savingNames}
           />
+          {/* 頻出単語の集計。用語リストへ追加して再アップロードすると精度が上がる */}
+          {(active.status === "done" || active.status === "canceled") &&
+            (active.segments ?? []).length > 0 && (
+              <WordFrequencies
+                jobId={active.id}
+                vocabulary={prompt.vocabulary}
+                onAddWord={addVocabularyWord}
+              />
+            )}
           {/* 完了後にローカル LLM で要約・議事録を生成(結果はジョブに保存される) */}
           {active.status === "done" && (
             <SummaryPanel
