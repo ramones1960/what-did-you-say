@@ -42,6 +42,7 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
   const [dragging, setDragging] = useState(false);
   const [pending, setPending] = useState<File | null>(null); // 開始待ちのファイル
   const [uploading, setUploading] = useState(false);
+  const [canceling, setCanceling] = useState<string[]>([]); // 中断要求中のジョブ ID
   const [prompt, setPrompt] = usePromptSettings();
   const [names, setNames] = useState<SpeakerNames>({});
   const [savingNames, setSavingNames] = useState(false);
@@ -56,7 +57,14 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
 
   const refreshJobs = useCallback(async () => {
     const res = await fetch("/api/jobs");
-    if (res.ok) setJobs(await res.json());
+    if (!res.ok) return;
+    const fresh: Job[] = await res.json();
+    setJobs(fresh);
+    // 実行が終わった(=中断が反映された)ジョブは「中断中」表示から外す
+    const running = new Set(
+      fresh.filter((j) => j.status === "queued" || j.status === "processing").map((j) => j.id),
+    );
+    setCanceling((ids) => ids.filter((id) => running.has(id)));
   }, []);
 
   useEffect(() => {
@@ -114,9 +122,11 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
 
   /** 処理中・待機中のジョブを中断する。途中までの結果は残る。 */
   async function cancelJob(id: string) {
+    setCanceling((ids) => (ids.includes(id) ? ids : [...ids, id]));
     const res = await fetch(`/api/jobs/${id}/cancel`, { method: "POST" });
     if (!res.ok) {
       setError("中断に失敗しました");
+      setCanceling((ids) => ids.filter((x) => x !== id));
       return;
     }
     await refreshJobs();
@@ -293,12 +303,13 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
                   {isRunning(j.status) ? (
                     <button
                       className="small"
+                      disabled={canceling.includes(j.id)}
                       onClick={(e) => {
                         e.stopPropagation();
                         cancelJob(j.id);
                       }}
                     >
-                      中断
+                      {canceling.includes(j.id) ? "中断中…" : "中断"}
                     </button>
                   ) : (
                     <button
@@ -324,8 +335,12 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
             <strong>{active.filename}</strong>
             {isRunning(active.status) && <progress value={active.progress} max={1} />}
             {isRunning(active.status) && (
-              <button className="small" onClick={() => cancelJob(active.id)}>
-                中断
+              <button
+                className="small"
+                disabled={canceling.includes(active.id)}
+                onClick={() => cancelJob(active.id)}
+              >
+                {canceling.includes(active.id) ? "中断中…" : "中断"}
               </button>
             )}
             <span className="spacer" />
