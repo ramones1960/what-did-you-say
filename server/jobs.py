@@ -6,6 +6,9 @@
   3. ffmpeg で 16kHz mono WAV に変換 → faster-whisper で文字起こし
   4. セグメントは確定するたびに DB へ書き込まれるため、クライアントは
      GET /api/jobs/{id} のポーリングで途中経過を取得できる
+     (話者ラベルは逐次割り当ての暫定値)
+  5. 完了前に音声全体を通した一括話者分離(diarize.diarize_offline)で
+     話者ラベルを置き換えて確定する(失敗時は暫定値のまま完了)
 
 ジョブの状態遷移: queued → processing → done / error / canceled
 (進捗はセグメント末尾時刻 / 音声全長で 0.0〜1.0)
@@ -223,6 +226,30 @@ def _process_job(job_id: str) -> None:
                 return
 
         check_canceled()
+
+        # 完了前に、音声全体を通した一括話者分離で逐次(オンライン)割り当てを
+        # 置き換える。処理順に依存しないため精度が高い(diarize.py 参照)。
+        # 失敗しても致命的ではないので、その場合は逐次割り当ての結果のまま完了する
+        if audio is not None and diarize.offline_available():
+            try:
+                turns = diarize.diarize_offline(
+                    audio,
+                    num_speakers=job.get("num_speakers"),
+                    should_abort=lambda: job_id in _cancel_requested,
+                )
+                # 中断で打ち切られた場合は不完全な結果を適用せず canceled へ
+                check_canceled()
+                speakers = diarize.map_speakers(db.get_segments(job_id), turns)
+                if speakers:
+                    db.update_segment_speakers(job_id, speakers)
+            except JobCanceled:
+                raise
+            except Exception:
+                logger.exception(
+                    "job %s の一括話者分離に失敗しました(逐次割り当ての結果のまま完了します)",
+                    job_id,
+                )
+
         db.set_progress(job_id, 1.0)
         db.set_status(job_id, "done")
         # 元ファイルは文字起こし完了後に削除(結果は DB に残る)

@@ -41,6 +41,7 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
   const [pending, setPending] = useState<File | null>(null); // 開始待ちのファイル
+  const [numSpeakers, setNumSpeakers] = useState(""); // 話者の人数(空欄で自動推定)
   const [uploading, setUploading] = useState(false);
   const [canceling, setCanceling] = useState<string[]>([]); // 中断要求中のジョブ ID
   const [prompt, setPrompt] = usePromptSettings();
@@ -102,6 +103,7 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
       form.append("file", pending);
       form.append("vocabulary", prompt.vocabulary);
       form.append("context", prompt.context);
+      if (numSpeakers) form.append("num_speakers", numSpeakers);
       const res = await fetch(`/api/jobs?language=${encodeURIComponent(language)}`, {
         method: "POST",
         body: form,
@@ -218,6 +220,19 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
             </option>
           ))}
         </select>
+        {/* 指定すると話者分離のクラスタ数が固定される。空欄なら自動推定 */}
+        <label className="inline-field">
+          話者の人数
+          <input
+            type="number"
+            min={1}
+            max={16}
+            placeholder="自動"
+            className="num-speakers"
+            value={numSpeakers}
+            onChange={(e) => setNumSpeakers(e.target.value)}
+          />
+        </label>
         <label className="button">
           ファイルを選択
           <input

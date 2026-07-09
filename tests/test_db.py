@@ -37,6 +37,7 @@ class TestInitDb:
         assert job is not None
         assert job["vocabulary"] is None  # 追加されたカラムが読める
         assert job["speaker_names"] is None
+        assert job["num_speakers"] is None
         db.add_segment("old", 0, 0, 1, "テスト", speaker=1)  # speaker カラムも追加済み
         assert db.get_segments("old")[0]["speaker"] == 1
 
@@ -65,6 +66,15 @@ class TestJobs:
         db.delete_job(job_id)
         assert db.get_job(job_id) is None
         assert db.get_segments(job_id) == []
+
+    def test_話者番号の一括更新(self, fresh_db):
+        # 完了時の一括話者分離が逐次割り当てを置き換えるのに使う
+        job_id = db.create_job("a.mp3", None, num_speakers=3)
+        assert db.get_job(job_id)["num_speakers"] == 3
+        for i in range(3):
+            db.add_segment(job_id, i, i, i + 1, f"s{i}", speaker=1)
+        db.update_segment_speakers(job_id, {0: 2, 2: 3})
+        assert [s["speaker"] for s in db.get_segments(job_id)] == [2, 1, 3]
 
     def test_progressは0から1に丸められる(self, fresh_db):
         job_id = db.create_job("a.mp3", None)

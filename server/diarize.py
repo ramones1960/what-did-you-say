@@ -1,10 +1,18 @@
 """話者分離(スピーカーダイアライゼーション)。
 
-sherpa-onnx の話者埋め込みモデルでセグメントごとの声紋ベクトルを取り、
-オンラインクラスタリング(セントロイドとのコサイン類似度)で
-「話者1」「話者2」… の仮ラベルを割り当てる。氏名はあとから
-speaker_names マッピングで一括適用する(exporters / フロント側)。
+2つの方式を持つ:
 
+- **逐次(オンライン)割り当て** … SpeakerTracker。セグメントごとに sherpa-onnx の
+  話者埋め込み(声紋ベクトル)を取り、既存話者セントロイドとのコサイン類似度で
+  「話者1」「話者2」… の仮ラベルを割り当てる。リアルタイム文字起こしと、
+  ファイル文字起こしの処理中の暫定表示に使う
+- **一括(オフライン)話者分離** … diarize_offline / map_speakers。音声全体を
+  sherpa-onnx の OfflineSpeakerDiarization(pyannote segmentation-3.0 の ONNX 版 +
+  話者埋め込み)で解析し、話者区間とセグメントの時間重なりでラベルを割り当て直す。
+  処理順に依存せず話者交代の検出も行うため逐次より精度が高い。ファイル文字起こしの
+  完了時に jobs.py が呼び、逐次割り当ての結果を置き換える
+
+氏名はあとから speaker_names マッピングで一括適用する(exporters / フロント側)。
 モデルは初回利用時に Hugging Face から取得し、HF キャッシュ
 (Docker では model_cache ボリューム)に保存される。取得できない
 環境では話者タグなしで従来どおり動作する。
@@ -12,6 +20,7 @@ speaker_names マッピングで一括適用する(exporters / フロント側)�
 
 import logging
 import threading
+from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
@@ -107,3 +116,133 @@ class SpeakerTracker:
         self._counts.append(1)
         self._last = len(self._centroids)
         return self._last
+
+
+# --- 一括(オフライン)話者分離 ---
+
+_diarizer = None
+_diarizer_failed = False
+# 一括処理は数十秒〜数分かかるため、リアルタイムの埋め込み抽出(_lock)とは
+# 別のロックで直列化する(同時ジョブどうしの競合防止)
+_offline_lock = threading.Lock()
+
+
+def _segmentation_model_path() -> str:
+    local = config.SEGMENTATION_MODEL_PATH
+    if local and Path(local).exists():
+        return str(local)
+    from huggingface_hub import hf_hub_download
+
+    return hf_hub_download(
+        repo_id=config.SEGMENTATION_MODEL_REPO,
+        filename=config.SEGMENTATION_MODEL_FILE,
+    )
+
+
+def _diarizer_config(num_speakers: int | None):
+    """一括話者分離の設定を組み立てる。
+
+    num_speakers を指定するとクラスタ数を固定し(人数既知の会議で頑健)、
+    未指定なら DIARIZATION_CLUSTER_THRESHOLD で自動推定する。
+    """
+    import sherpa_onnx
+
+    return sherpa_onnx.OfflineSpeakerDiarizationConfig(
+        segmentation=sherpa_onnx.OfflineSpeakerSegmentationModelConfig(
+            pyannote=sherpa_onnx.OfflineSpeakerSegmentationPyannoteModelConfig(
+                model=_segmentation_model_path()
+            ),
+            num_threads=2,
+        ),
+        embedding=sherpa_onnx.SpeakerEmbeddingExtractorConfig(
+            model=_model_path(), num_threads=2
+        ),
+        clustering=sherpa_onnx.FastClusteringConfig(
+            num_clusters=num_speakers or -1,
+            threshold=config.DIARIZATION_CLUSTER_THRESHOLD,
+        ),
+    )
+
+
+def _get_diarizer():
+    global _diarizer, _diarizer_failed
+    with _offline_lock:
+        if _diarizer is None and not _diarizer_failed and config.DIARIZATION_ENABLED:
+            try:
+                import sherpa_onnx
+
+                _diarizer = sherpa_onnx.OfflineSpeakerDiarization(
+                    _diarizer_config(None)
+                )
+                logger.info("offline speaker diarization model loaded")
+            except Exception:
+                _diarizer_failed = True
+                logger.exception(
+                    "一括話者分離モデルを読み込めませんでした。逐次割り当ての結果のまま続行します"
+                )
+        return _diarizer
+
+
+def offline_available() -> bool:
+    return _get_diarizer() is not None
+
+
+def diarize_offline(
+    audio: np.ndarray,
+    num_speakers: int | None = None,
+    should_abort: Callable[[], bool] | None = None,
+) -> list[tuple[float, float, int]]:
+    """音声全体(float32 mono 16kHz)に一括話者分離をかけて話者区間を返す。
+
+    戻り値は (start, end, 話者ID) のリスト(開始時刻順)。話者 ID は 0 始まりの
+    生のクラスタ番号で、「話者N」への振り直しは map_speakers が行う。
+    should_abort が True を返すと途中で打ち切る(不完全な結果になるため、
+    呼び出し側は中断時の戻り値を使わないこと)。
+    """
+    diarizer = _get_diarizer()
+    if diarizer is None:
+        return []
+
+    def callback(_done: int, _total: int) -> int:
+        return 1 if should_abort is not None and should_abort() else 0
+
+    with _offline_lock:
+        # クラスタリング設定(人数指定)だけを差し替える。モデルは再ロードされない
+        diarizer.set_config(_diarizer_config(num_speakers))
+        result = diarizer.process(audio, callback=callback)
+    return [(s.start, s.end, s.speaker) for s in result.sort_by_start_time()]
+
+
+def map_speakers(
+    segments: list[dict], turns: list[tuple[float, float, int]]
+) -> dict[int, int]:
+    """一括話者分離の話者区間を文字起こしセグメントへ割り当てる。
+
+    各セグメント(idx / start / end を持つ辞書)に対し、時間の重なりが最大の
+    話者区間を採用する。重なる区間が無いセグメント(無音際など)は最も近い
+    区間に寄せる。話者番号は登場順に 1 始まりで振り直し、「話者N」の
+    セッション内連番の慣例に合わせる。戻り値は {セグメント idx: 話者番号}。
+    turns が空(発話区間なし・処理不能)なら空辞書を返し、呼び出し側は
+    既存の割り当てを維持する。
+    """
+    if not turns:
+        return {}
+    renumber: dict[int, int] = {}  # 生のクラスタ番号 → 登場順の話者番号
+    mapping: dict[int, int] = {}
+    for seg in segments:
+        best: int | None = None
+        best_overlap = 0.0
+        for start, end, spk in turns:
+            overlap = min(seg["end"], end) - max(seg["start"], start)
+            if overlap > best_overlap:
+                best, best_overlap = spk, overlap
+        if best is None:
+            best_dist: float | None = None
+            for start, end, spk in turns:
+                dist = max(start - seg["end"], seg["start"] - end, 0.0)
+                if best_dist is None or dist < best_dist:
+                    best, best_dist = spk, dist
+        if best not in renumber:
+            renumber[best] = len(renumber) + 1
+        mapping[seg["idx"]] = renumber[best]
+    return mapping

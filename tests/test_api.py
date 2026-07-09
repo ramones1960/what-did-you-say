@@ -54,6 +54,28 @@ class TestCreateJob:
         )
         assert res.status_code == 400
 
+    def test_話者の人数を指定できる(self, client):
+        res = client.post(
+            "/api/jobs",
+            files={"file": ("a.mp3", b"x")},
+            data={"num_speakers": "3"},
+        )
+        assert res.status_code == 200
+        assert db.get_job(res.json()["id"])["num_speakers"] == 3
+
+    def test_話者の人数は未指定ならNULL(self, client):
+        res = client.post("/api/jobs", files={"file": ("a.mp3", b"x")})
+        assert db.get_job(res.json()["id"])["num_speakers"] is None
+
+    def test_話者の人数の検証(self, client):
+        for bad in ("0", "17", "abc", "-1", "1.5"):
+            res = client.post(
+                "/api/jobs",
+                files={"file": ("a.mp3", b"x")},
+                data={"num_speakers": bad},
+            )
+            assert res.status_code == 400, bad
+
     def test_空ファイルは拒否(self, client):
         res = client.post("/api/jobs", files={"file": ("a.mp3", b"")})
         assert res.status_code == 400
