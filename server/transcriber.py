@@ -101,7 +101,7 @@ def transcribe_file(
             str(path),
             language=language or config.DEFAULT_LANGUAGE,
             vad_filter=True,
-            beam_size=5,
+            beam_size=config.BEAM_SIZE,
             hotwords=normalize_vocabulary(vocabulary),
             initial_prompt=context or None,
         )
@@ -125,7 +125,7 @@ def transcribe_pcm(
         segments, _info = model.transcribe(
             audio,
             language=language or config.DEFAULT_LANGUAGE,
-            beam_size=5,
+            beam_size=config.BEAM_SIZE,
             condition_on_previous_text=False,
             hotwords=normalize_vocabulary(vocabulary),
             initial_prompt=context or None,

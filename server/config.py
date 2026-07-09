@@ -13,6 +13,8 @@ MODEL_NAME = _env("WHISPER_MODEL", "small")
 DEVICE = _env("WHISPER_DEVICE", "auto")          # auto / cpu / cuda
 COMPUTE_TYPE = _env("WHISPER_COMPUTE_TYPE", "auto")  # auto / int8 / float16 ...
 DEFAULT_LANGUAGE = _env("WHISPER_LANGUAGE", "") or None  # 空なら自動判定
+# デコードの探索ビーム幅。大きいほど精度が上がりうるが推論は遅くなる
+BEAM_SIZE = int(_env("WHISPER_BEAM_SIZE", "5"))
 
 # データ永続化
 DATA_DIR = Path(_env("DATA_DIR", "./data")).resolve()
