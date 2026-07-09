@@ -234,7 +234,8 @@ def _process_job(job_id: str) -> None:
             try:
                 turns = diarize.diarize_offline(
                     audio,
-                    num_speakers=job.get("num_speakers"),
+                    min_speakers=job.get("min_speakers"),
+                    max_speakers=job.get("max_speakers"),
                     should_abort=lambda: job_id in _cancel_requested,
                 )
                 # 中断で打ち切られた場合は不完全な結果を適用せず canceled へ

@@ -73,7 +73,7 @@ POST /api/jobs (multipart) → jobs テーブルに queued で登録、即 ID �
 2段構え。処理中は逐次(オンライン)割り当てで暫定表示し、ファイル文字起こしは完了時に一括(オフライン)処理で置き換えて確定する(`server/diarize.py`)。
 
 - **逐次割り当て**(リアルタイム・ファイル処理中の暫定): セグメントの音声から **話者埋め込み**(声紋ベクトル・192次元)を sherpa-onnx + CAM++ モデルで抽出し、セッション内の既存話者セントロイドとコサイン類似度を取り、`SPEAKER_THRESHOLD`(既定0.4)以上なら同一話者としてセントロイド更新、未満なら新話者。0.5秒未満の短いセグメントは判定せず直前の話者を継承
-- **一括話者分離**(ファイル文字起こしの完了時): sherpa-onnx の OfflineSpeakerDiarization(pyannote segmentation-3.0 の ONNX 版 + 同じ話者埋め込みモデル)で音声全体を解析し、話者区間と Whisper セグメントの時間重なりで話者を割り当て直す。逐次と違い処理順に依存せず、話者交代の検出も行うため精度が高い。アップロード時に**話者の人数**を指定するとクラスタ数として固定され(人数既知ならさらに頑健)、未指定なら `DIARIZATION_CLUSTER_THRESHOLD`(既定0.5)で自動推定。モデル未取得・失敗時は逐次割り当ての結果のまま完了する(非致命)。中断されたジョブは一括処理を行わない
+- **一括話者分離**(ファイル文字起こしの完了時): sherpa-onnx の OfflineSpeakerDiarization(pyannote segmentation-3.0 の ONNX 版 + 同じ話者埋め込みモデル)で音声全体を解析し、話者区間と Whisper セグメントの時間重なりで話者を割り当て直す。逐次と違い処理順に依存せず、話者交代の検出も行うため精度が高い。アップロード時に**話者の人数**を最小〜最大の幅で指定できる(参加者全員が発話するとは限らないため。同数ならクラスタ数固定、片方だけの指定も可)。幅指定時はまず自動推定し、結果が範囲を外れたときだけ近い方の境界値にクラスタ数を固定してやり直す(その場合のみ処理時間が約2倍)。未指定なら `DIARIZATION_CLUSTER_THRESHOLD`(既定0.5)で自動推定。モデル未取得・失敗時は逐次割り当ての結果のまま完了する(非致命)。中断されたジョブは一括処理を行わない
 - ラベルは「話者1, 話者2, …」の**セッション内連番(仮名)**(一括処理後も登場順に振り直す)。氏名は `jobs.speaker_names`(JSON)に別途保存し、表示・エクスポート時にマッピングする(**元データは仮名のまま**なので後から何度でも付け替え可能)
 - モデル取得失敗・`DIARIZATION=0` のときは speaker が NULL になり、他機能は影響を受けない
 
@@ -114,7 +114,7 @@ POST /api/summarize {kind, segments}   ← リアルタイム(クライアント
 
 | テーブル | 用途 | 主なカラム |
 |---|---|---|
-| jobs | ファイル文字起こしのジョブ | id, filename, status, error, language, vocabulary, context, speaker_names(JSON), num_speakers, duration, progress, created_at |
+| jobs | ファイル文字起こしのジョブ | id, filename, status, error, language, vocabulary, context, speaker_names(JSON), min_speakers, max_speakers, duration, progress, created_at |
 | segments | 文字起こし結果 | job_id, idx, start, end, text, speaker(1始まり/NULL) |
 | presets | 用語リスト等の共有プリセット | id, name(UNIQUE), vocabulary, context, updated_at |
 | summaries | LLM 生成の要約・議事録 | job_id, kind(summary/minutes), content, model, created_at(job_id×kind で1件、再生成は上書き) |

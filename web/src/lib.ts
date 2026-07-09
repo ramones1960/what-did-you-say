@@ -40,7 +40,8 @@ export interface Job {
   progress: number;
   created_at: number;
   speaker_names?: string | null;
-  num_speakers?: number | null;
+  min_speakers?: number | null;
+  max_speakers?: number | null;
   segments?: Segment[];
   summaries?: Record<string, SummaryResult>;
 }
