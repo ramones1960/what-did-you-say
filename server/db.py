@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     vocabulary  TEXT,                    -- 用語リスト (hotwords)
     context     TEXT,                    -- 前提コンテキスト (initial_prompt)
     speaker_names TEXT,                  -- 話者番号→氏名の JSON マップ
+    num_speakers INTEGER,                -- 話者の人数(利用者申告、未指定は NULL)
     duration    REAL,                    -- 音声全体の長さ(秒)
     progress    REAL NOT NULL DEFAULT 0, -- 0.0〜1.0
     created_at  REAL NOT NULL
@@ -78,6 +79,7 @@ def init_db() -> None:
             ("jobs", "vocabulary", "TEXT"),
             ("jobs", "context", "TEXT"),
             ("jobs", "speaker_names", "TEXT"),
+            ("jobs", "num_speakers", "INTEGER"),
             ("segments", "speaker", "INTEGER"),
         ):
             try:
@@ -91,14 +93,15 @@ def create_job(
     language: str | None,
     vocabulary: str | None = None,
     context: str | None = None,
+    num_speakers: int | None = None,
 ) -> str:
     """queued 状態のジョブを作成してジョブ ID を返す。"""
     job_id = uuid.uuid4().hex
     with _conn() as conn:
         conn.execute(
-            "INSERT INTO jobs (id, filename, status, language, vocabulary, context, created_at)"
-            " VALUES (?, ?, 'queued', ?, ?, ?, ?)",
-            (job_id, filename, language, vocabulary, context, time.time()),
+            "INSERT INTO jobs (id, filename, status, language, vocabulary, context, num_speakers, created_at)"
+            " VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)",
+            (job_id, filename, language, vocabulary, context, num_speakers, time.time()),
         )
     return job_id
 
@@ -142,6 +145,15 @@ def add_segment(
             "INSERT OR REPLACE INTO segments (job_id, idx, start, end, text, speaker)"
             " VALUES (?, ?, ?, ?, ?, ?)",
             (job_id, idx, start, end, text, speaker),
+        )
+
+
+def update_segment_speakers(job_id: str, speakers: dict[int, int]) -> None:
+    """セグメントの話者番号を一括で置き換える(完了時の一括話者分離用)。"""
+    with _conn() as conn:
+        conn.executemany(
+            "UPDATE segments SET speaker = ? WHERE job_id = ? AND idx = ?",
+            [(spk, job_id, idx) for idx, spk in speakers.items()],
         )
 
 

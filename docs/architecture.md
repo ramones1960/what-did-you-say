@@ -70,10 +70,11 @@ POST /api/jobs (multipart) → jobs テーブルに queued で登録、即 ID �
 
 ### 2.3 話者分離(ダイアライゼーション)
 
-- セグメントの音声から **話者埋め込み**(声紋ベクトル・192次元)を sherpa-onnx + CAM++ モデルで抽出
-- **オンラインクラスタリング**: セッション内の既存話者セントロイドとコサイン類似度を取り、`SPEAKER_THRESHOLD`(既定0.4)以上なら同一話者としてセントロイド更新、未満なら新話者
-- 0.5秒未満の短いセグメントは判定せず直前の話者を継承
-- ラベルは「話者1, 話者2, …」の**セッション内連番(仮名)**。氏名は `jobs.speaker_names`(JSON)に別途保存し、表示・エクスポート時にマッピングする(**元データは仮名のまま**なので後から何度でも付け替え可能)
+2段構え。処理中は逐次(オンライン)割り当てで暫定表示し、ファイル文字起こしは完了時に一括(オフライン)処理で置き換えて確定する(`server/diarize.py`)。
+
+- **逐次割り当て**(リアルタイム・ファイル処理中の暫定): セグメントの音声から **話者埋め込み**(声紋ベクトル・192次元)を sherpa-onnx + CAM++ モデルで抽出し、セッション内の既存話者セントロイドとコサイン類似度を取り、`SPEAKER_THRESHOLD`(既定0.4)以上なら同一話者としてセントロイド更新、未満なら新話者。0.5秒未満の短いセグメントは判定せず直前の話者を継承
+- **一括話者分離**(ファイル文字起こしの完了時): sherpa-onnx の OfflineSpeakerDiarization(pyannote segmentation-3.0 の ONNX 版 + 同じ話者埋め込みモデル)で音声全体を解析し、話者区間と Whisper セグメントの時間重なりで話者を割り当て直す。逐次と違い処理順に依存せず、話者交代の検出も行うため精度が高い。アップロード時に**話者の人数**を指定するとクラスタ数として固定され(人数既知ならさらに頑健)、未指定なら `DIARIZATION_CLUSTER_THRESHOLD`(既定0.5)で自動推定。モデル未取得・失敗時は逐次割り当ての結果のまま完了する(非致命)。中断されたジョブは一括処理を行わない
+- ラベルは「話者1, 話者2, …」の**セッション内連番(仮名)**(一括処理後も登場順に振り直す)。氏名は `jobs.speaker_names`(JSON)に別途保存し、表示・エクスポート時にマッピングする(**元データは仮名のまま**なので後から何度でも付け替え可能)
 - モデル取得失敗・`DIARIZATION=0` のときは speaker が NULL になり、他機能は影響を受けない
 
 ### 2.4 発言の区切り(セグメント結合)
@@ -113,7 +114,7 @@ POST /api/summarize {kind, segments}   ← リアルタイム(クライアント
 
 | テーブル | 用途 | 主なカラム |
 |---|---|---|
-| jobs | ファイル文字起こしのジョブ | id, filename, status, error, language, vocabulary, context, speaker_names(JSON), duration, progress, created_at |
+| jobs | ファイル文字起こしのジョブ | id, filename, status, error, language, vocabulary, context, speaker_names(JSON), num_speakers, duration, progress, created_at |
 | segments | 文字起こし結果 | job_id, idx, start, end, text, speaker(1始まり/NULL) |
 | presets | 用語リスト等の共有プリセット | id, name(UNIQUE), vocabulary, context, updated_at |
 | summaries | LLM 生成の要約・議事録 | job_id, kind(summary/minutes), content, model, created_at(job_id×kind で1件、再生成は上書き) |
@@ -153,11 +154,13 @@ UI 文言は日本語。デザインは `src/styles.css` に集約(業務アプ�
 |---|---|---|
 | WHISPER_MODEL | small | Whisper モデル名(tiny/base/small/medium/large-v3) |
 | WHISPER_DEVICE / WHISPER_COMPUTE_TYPE | auto | cuda + float16 で GPU 利用(VRAM 不足時は int8_float16) |
+| WHISPER_BEAM_SIZE | 5 | デコードの探索ビーム幅。大きいほど精度が上がりうるが推論は遅くなる |
 | JOB_WORKERS | 1 | ファイル文字起こしの並列数 |
 | MAX_REALTIME_SESSIONS | 2 | リアルタイム同時接続上限 |
 | REALTIME_PARTIAL_INTERVAL | 2.0 | リアルタイム暫定表示の間隔(秒)。0 で無効化 |
 | DIARIZATION | 1 | 話者分離の有効/無効 |
-| SPEAKER_THRESHOLD | 0.4 | 話者クラスタリングのしきい値 |
+| SPEAKER_THRESHOLD | 0.4 | 逐次割り当てのコサイン類似度しきい値 |
+| DIARIZATION_CLUSTER_THRESHOLD | 0.5 | 一括話者分離のクラスタリングしきい値(人数未指定時の自動推定。上げると話者がまとまりやすい) |
 | LLM_API_URL | (空=無効) | ローカル LLM の OpenAI 互換 API ベース URL(例: http://localhost:11434/v1) |
 | LLM_MODEL | qwen2.5:7b-instruct | 要約・議事録に使う LLM モデル名 |
 | LLM_TIMEOUT / LLM_MAX_INPUT_CHARS | 300 / 24000 | LLM 生成の待ち時間上限(秒)/ 入力文字数上限 |
@@ -167,7 +170,7 @@ UI 文言は日本語。デザインは `src/styles.css` に集約(業務アプ�
 ## 7. 同時実行の設計
 
 - **モデル推論は `transcriber.inference_lock` で全体1本に直列化**(CPU/GPU の取り合い防止)。並列度を上げたい場合はワーカープロセス分離が安全
-- 話者埋め込みの抽出も `diarize._lock` で直列化
+- 話者埋め込みの抽出は `diarize._lock`、一括話者分離は `diarize._offline_lock` で直列化(一括処理は長時間かかるため、リアルタイムの埋め込み抽出をブロックしないよう別ロック)
 - ブロッキング処理(推論・ffmpeg・埋め込み)は必ず `asyncio.to_thread` 経由でイベントループの外で実行する
 - SQLite は WAL モード + 操作ごとの短い接続で十分な規模
 
@@ -195,7 +198,7 @@ UI 文言は日本語。デザインは `src/styles.css` に集約(業務アプ�
 ## 10. 既知の制約
 
 - リアルタイムの暫定(partial)表示はベストエフォート(推論が混んでいるときはスキップされる)。確定は従来どおり発話終了後
-- 話者分離はベストエフォート。声質が近い話者は同一視されうる。会議録音(遠いマイク・被り)では精度が落ちる
+- 話者分離はベストエフォート。声質が近い話者は同一視されうる。会議録音(遠いマイク・被り)では精度が落ちる。リアルタイムは逐次割り当てのみで、一括処理による確定はファイル文字起こしだけ
 - 用語リストは認識バイアスであり確実な置換ではない。表記の強制統一は「文字起こし後の置換辞書」(未実装)で対応する想定
 - 再起動時のジョブ再投入は「最初からやり直し」方式(Whisper は途中再開できないため、processing 途中のセグメントは破棄される)
 - 要約・議事録の品質はローカル LLM のモデル性能に依存する。長い会議は LLM_MAX_INPUT_CHARS で切り詰められる(分割要約は未実装)

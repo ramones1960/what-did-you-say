@@ -13,6 +13,8 @@ MODEL_NAME = _env("WHISPER_MODEL", "small")
 DEVICE = _env("WHISPER_DEVICE", "auto")          # auto / cpu / cuda
 COMPUTE_TYPE = _env("WHISPER_COMPUTE_TYPE", "auto")  # auto / int8 / float16 ...
 DEFAULT_LANGUAGE = _env("WHISPER_LANGUAGE", "") or None  # 空なら自動判定
+# デコードの探索ビーム幅。大きいほど精度が上がりうるが推論は遅くなる
+BEAM_SIZE = int(_env("WHISPER_BEAM_SIZE", "5"))
 
 # データ永続化
 DATA_DIR = Path(_env("DATA_DIR", "./data")).resolve()
@@ -29,6 +31,16 @@ SPEAKER_MODEL_FILE = _env(
 )
 # 同一話者とみなすコサイン類似度のしきい値(下げると話者がまとまりやすい)
 SPEAKER_THRESHOLD = float(_env("SPEAKER_THRESHOLD", "0.4"))
+# 一括話者分離(ファイル文字起こし完了時)のセグメンテーションモデル
+# pyannote segmentation-3.0 の ONNX 変換版。トークン不要で取得できる
+SEGMENTATION_MODEL_PATH = _env("SEGMENTATION_MODEL_PATH", "")  # ローカルの .onnx を使う場合
+SEGMENTATION_MODEL_REPO = _env(
+    "SEGMENTATION_MODEL_REPO", "csukuangfj/sherpa-onnx-pyannote-segmentation-3-0"
+)
+SEGMENTATION_MODEL_FILE = _env("SEGMENTATION_MODEL_FILE", "model.onnx")
+# 一括話者分離のクラスタリングしきい値(話者の人数が未指定のときの自動推定に使う。
+# 上げると話者がまとまりやすく、下げると分かれやすい)
+DIARIZATION_CLUSTER_THRESHOLD = float(_env("DIARIZATION_CLUSTER_THRESHOLD", "0.5"))
 
 # 同時実行制御
 JOB_WORKERS = int(_env("JOB_WORKERS", "1"))

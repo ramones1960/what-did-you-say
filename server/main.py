@@ -70,6 +70,9 @@ async def health() -> dict:
 # 約224トークンしか効かないため、これ以上長くしても効果がない
 MAX_PROMPT_CHARS = 1000
 
+# 話者の人数指定の上限(一括話者分離のクラスタ数として使う)
+MAX_NUM_SPEAKERS = 16
+
 
 @app.post("/api/jobs")
 async def create_job(
@@ -77,25 +80,35 @@ async def create_job(
     language: str = "",
     vocabulary: str = Form(""),
     context: str = Form(""),
+    num_speakers: str = Form(""),
     user: auth.User = Depends(auth.get_current_user),
 ) -> dict:
     """ファイルを受け取ってジョブを作成し、キューに積んで即座に ID を返す。
 
     処理自体は非同期(jobs.py のワーカー)で行われるため、クライアントは
     返された ID で GET /api/jobs/{id} をポーリングして進捗を追う。
-    language はクエリ、vocabulary / context はフォーム項目で受け取る。
+    language はクエリ、vocabulary / context / num_speakers はフォーム項目で受け取る。
+    num_speakers(話者の人数)は任意で、指定すると話者分離のクラスタ数が固定される。
     """
     lang = language.strip() or None
     if lang and not re.fullmatch(r"[a-z]{2,3}", lang):
         raise HTTPException(400, "言語コードが不正です")
     if len(vocabulary) > MAX_PROMPT_CHARS or len(context) > MAX_PROMPT_CHARS:
         raise HTTPException(400, f"用語リスト・コンテキストは{MAX_PROMPT_CHARS}文字以内にしてください")
+    speakers: int | None = None
+    if num_speakers.strip():
+        if not re.fullmatch(r"\d{1,2}", num_speakers.strip()):
+            raise HTTPException(400, "話者の人数が不正です")
+        speakers = int(num_speakers)
+        if not 1 <= speakers <= MAX_NUM_SPEAKERS:
+            raise HTTPException(400, f"話者の人数は1〜{MAX_NUM_SPEAKERS}で指定してください")
 
     job_id = db.create_job(
         file.filename or "unnamed",
         lang,
         vocabulary=vocabulary.strip() or None,
         context=context.strip() or None,
+        num_speakers=speakers,
     )
     dest = jobs.upload_path(job_id)
     size = 0
