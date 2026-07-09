@@ -7,8 +7,16 @@
   4. セグメントは確定するたびに DB へ書き込まれるため、クライアントは
      GET /api/jobs/{id} のポーリングで途中経過を取得できる
 
-ジョブの状態遷移: queued → processing → done / error
+ジョブの状態遷移: queued → processing → done / error / canceled
 (進捗はセグメント末尾時刻 / 音声全長で 0.0〜1.0)
+
+中断(キャンセル): main.py の POST /api/jobs/{id}/cancel が request_cancel() を
+呼ぶと、その ID が _cancel_requested に入る。ワーカーは処理の要所(変換後・
+セグメント確定ごと)でこのフラグを見て JobCanceled を送出し、状態を canceled に
+して途中結果はそのまま残す(元ファイルのみ削除)。Whisper はセグメント境界でしか
+止められないため、中断は「次のセグメントが確定した時」に反映される。通常の会話音声
+(無音でセグメントが細かく区切れる)なら数秒だが、無音が少なく1セグメントが長い
+音声では、そのセグメントの推論が終わるまで反映が遅れる。
 
 v1 はインプロセスの asyncio.Queue + ワーカータスク。プロセス再起動で
 キュー内容は失われるため、起動時に requeue_stale_jobs() が DB 上に
@@ -33,6 +41,13 @@ logger = logging.getLogger(__name__)
 _queue: asyncio.Queue[str] = asyncio.Queue()
 _workers: list[asyncio.Task] = []
 
+# 中断が要求されたジョブ ID(プロセス内メモリ)。ワーカーが要所で参照する。
+_cancel_requested: set[str] = set()
+
+
+class JobCanceled(Exception):
+    """ユーザーの中断要求によって処理を打ち切るための内部例外。"""
+
 
 def upload_path(job_id: str) -> Path:
     """アップロードされた元ファイルの保存先(ジョブ ID がファイル名)。"""
@@ -42,6 +57,16 @@ def upload_path(job_id: str) -> Path:
 async def enqueue(job_id: str) -> None:
     """ジョブをキューに積む。DB 上のジョブは作成済みであること。"""
     await _queue.put(job_id)
+
+
+def request_cancel(job_id: str) -> None:
+    """ジョブの中断を要求する(main.py の cancel エンドポイントから呼ばれる)。
+
+    実際の停止はワーカーが次にフラグを確認したとき(セグメント確定時など)に
+    行われる。まだキュー内で処理が始まっていないジョブも、ワーカーが取り出した
+    時点でこのフラグを見て即座に canceled になる。
+    """
+    _cancel_requested.add(job_id)
 
 
 def requeue_stale_jobs() -> list[str]:
@@ -104,74 +129,105 @@ async def _worker_loop(worker_id: int) -> None:
             _queue.task_done()
 
 
+def _finalize_canceled(job_id: str) -> None:
+    """中断されたジョブを canceled 状態にし、元ファイルを片付ける。
+
+    途中まで確定したセグメントはそのまま残す(非破壊)。ユーザーはそこまでの
+    結果を確認・エクスポートでき、不要なら通常どおり削除できる。
+    """
+    db.set_status(job_id, "canceled")
+    upload_path(job_id).unlink(missing_ok=True)
+    logger.info("job %s を中断しました", job_id)
+
+
 def _process_job(job_id: str) -> None:
     """1ジョブを最後まで処理する(ワーカースレッド内で実行される)。
 
     変換 → 話者分離の準備 → 文字起こし(セグメントごとに DB へ書き込み)
     → 完了処理。元ファイルは完了時に削除し、結果だけを DB に残す。
+    中断が要求されていれば要所で JobCanceled を送出して canceled にする。
     """
     job = db.get_job(job_id)
     if job is None:
         return
+    # キュー待ちの間に中断されていたら、処理を始めずに片付ける
+    if job_id in _cancel_requested:
+        _finalize_canceled(job_id)
+        return
     db.set_status(job_id, "processing")
     src = upload_path(job_id)
 
-    with tempfile.TemporaryDirectory() as tmp:
-        wav = Path(tmp) / "audio.wav"
-        try:
-            media.to_wav16k(src, wav)
-        except media.MediaError as e:
-            db.set_status(job_id, "error", str(e))
-            return
+    def check_canceled() -> None:
+        if job_id in _cancel_requested:
+            raise JobCanceled()
 
-        duration = media.probe_duration(wav)
-        db.set_duration(job_id, duration)
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            wav = Path(tmp) / "audio.wav"
+            try:
+                media.to_wav16k(src, wav)
+            except media.MediaError as e:
+                db.set_status(job_id, "error", str(e))
+                return
+            check_canceled()
 
-        # 話者分離用に音声全体を読み込む(16kHz mono 16bit WAV)
-        audio: np.ndarray | None = None
-        tracker: diarize.SpeakerTracker | None = None
-        if diarize.available():
-            with wave.open(str(wav), "rb") as wf:
-                raw = wf.readframes(wf.getnframes())
-            audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
-            tracker = diarize.SpeakerTracker()
+            duration = media.probe_duration(wav)
+            db.set_duration(job_id, duration)
 
-        counter = {"idx": 0}
+            # 話者分離用に音声全体を読み込む(16kHz mono 16bit WAV)
+            audio: np.ndarray | None = None
+            tracker: diarize.SpeakerTracker | None = None
+            if diarize.available():
+                with wave.open(str(wav), "rb") as wf:
+                    raw = wf.readframes(wf.getnframes())
+                audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+                tracker = diarize.SpeakerTracker()
 
-        def on_info(language: str, _dur: float) -> None:
-            db.set_language(job_id, language)
+            counter = {"idx": 0}
 
-        def on_segment(seg: transcriber.Segment) -> None:
-            speaker = None
-            if tracker is not None and audio is not None:
-                clip = audio[int(seg.start * 16000):int(seg.end * 16000)]
-                speaker = tracker.assign(clip)
-            db.add_segment(
-                job_id, counter["idx"], seg.start, seg.end, seg.text, speaker
-            )
-            counter["idx"] += 1
-            if duration:
-                db.set_progress(job_id, seg.end / duration)
+            def on_info(language: str, _dur: float) -> None:
+                db.set_language(job_id, language)
 
-        try:
-            transcriber.transcribe_file(
-                wav,
-                job["language"],
-                on_segment,
-                on_info,
-                vocabulary=job.get("vocabulary"),
-                context=job.get("context"),
-            )
-        except Exception as e:
-            logger.exception("transcription failed for job %s", job_id)
-            db.set_status(
-                job_id,
-                "error",
-                f"文字起こしに失敗しました: {transcriber.explain_inference_error(e)}",
-            )
-            return
+            def on_segment(seg: transcriber.Segment) -> None:
+                # セグメント境界ごとに中断要求を確認する(唯一止められる箇所)
+                check_canceled()
+                speaker = None
+                if tracker is not None and audio is not None:
+                    clip = audio[int(seg.start * 16000):int(seg.end * 16000)]
+                    speaker = tracker.assign(clip)
+                db.add_segment(
+                    job_id, counter["idx"], seg.start, seg.end, seg.text, speaker
+                )
+                counter["idx"] += 1
+                if duration:
+                    db.set_progress(job_id, seg.end / duration)
 
-    db.set_progress(job_id, 1.0)
-    db.set_status(job_id, "done")
-    # 元ファイルは文字起こし完了後に削除(結果は DB に残る)
-    src.unlink(missing_ok=True)
+            try:
+                transcriber.transcribe_file(
+                    wav,
+                    job["language"],
+                    on_segment,
+                    on_info,
+                    vocabulary=job.get("vocabulary"),
+                    context=job.get("context"),
+                )
+            except JobCanceled:
+                raise
+            except Exception as e:
+                logger.exception("transcription failed for job %s", job_id)
+                db.set_status(
+                    job_id,
+                    "error",
+                    f"文字起こしに失敗しました: {transcriber.explain_inference_error(e)}",
+                )
+                return
+
+        check_canceled()
+        db.set_progress(job_id, 1.0)
+        db.set_status(job_id, "done")
+        # 元ファイルは文字起こし完了後に削除(結果は DB に残る)
+        src.unlink(missing_ok=True)
+    except JobCanceled:
+        _finalize_canceled(job_id)
+    finally:
+        _cancel_requested.discard(job_id)

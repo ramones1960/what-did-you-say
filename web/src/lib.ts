@@ -33,7 +33,7 @@ export function uniqueSpeakers(segments: Segment[]): number[] {
 export interface Job {
   id: string;
   filename: string;
-  status: "queued" | "processing" | "done" | "error";
+  status: "queued" | "processing" | "done" | "error" | "canceled";
   error: string | null;
   language: string | null;
   duration: number | null;

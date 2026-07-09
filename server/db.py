@@ -25,7 +25,7 @@ _SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
     id          TEXT PRIMARY KEY,
     filename    TEXT NOT NULL,
-    status      TEXT NOT NULL,           -- queued / processing / done / error
+    status      TEXT NOT NULL,           -- queued / processing / done / error / canceled
     error       TEXT,
     language    TEXT,
     vocabulary  TEXT,                    -- 用語リスト (hotwords)
