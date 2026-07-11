@@ -41,7 +41,10 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
   const [error, setError] = useState("");
   const [dragging, setDragging] = useState(false);
   const [pending, setPending] = useState<File | null>(null); // 開始待ちのファイル
-  const [numSpeakers, setNumSpeakers] = useState(""); // 話者の人数(空欄で自動推定)
+  // 話者の人数の幅(参加者全員が発話するとは限らないため最小〜最大で指定できる。
+  // 空欄は自動推定、同数にすると人数固定、片方だけの指定も可)
+  const [minSpeakers, setMinSpeakers] = useState("");
+  const [maxSpeakers, setMaxSpeakers] = useState("");
   const [uploading, setUploading] = useState(false);
   const [canceling, setCanceling] = useState<string[]>([]); // 中断要求中のジョブ ID
   const [prompt, setPrompt] = usePromptSettings();
@@ -103,7 +106,8 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
       form.append("file", pending);
       form.append("vocabulary", prompt.vocabulary);
       form.append("context", prompt.context);
-      if (numSpeakers) form.append("num_speakers", numSpeakers);
+      if (minSpeakers) form.append("min_speakers", minSpeakers);
+      if (maxSpeakers) form.append("max_speakers", maxSpeakers);
       const res = await fetch(`/api/jobs?language=${encodeURIComponent(language)}`, {
         method: "POST",
         body: form,
@@ -220,7 +224,7 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
             </option>
           ))}
         </select>
-        {/* 指定すると話者分離のクラスタ数が固定される。空欄なら自動推定 */}
+        {/* 話者分離のヒント。幅で指定でき、同数にすると人数固定、空欄なら自動推定 */}
         <label className="inline-field">
           話者の人数
           <input
@@ -229,8 +233,18 @@ export default function Upload({ llm }: { llm: LlmInfo | null }) {
             max={16}
             placeholder="自動"
             className="num-speakers"
-            value={numSpeakers}
-            onChange={(e) => setNumSpeakers(e.target.value)}
+            value={minSpeakers}
+            onChange={(e) => setMinSpeakers(e.target.value)}
+          />
+          〜
+          <input
+            type="number"
+            min={1}
+            max={16}
+            placeholder="自動"
+            className="num-speakers"
+            value={maxSpeakers}
+            onChange={(e) => setMaxSpeakers(e.target.value)}
           />
         </label>
         <label className="button">

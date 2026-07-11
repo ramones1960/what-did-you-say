@@ -74,41 +74,54 @@ MAX_PROMPT_CHARS = 1000
 MAX_NUM_SPEAKERS = 16
 
 
+def _parse_num_speakers(value: str) -> int | None:
+    """話者の人数のフォーム値を検証して int(未指定なら None)にする。"""
+    value = value.strip()
+    if not value:
+        return None
+    if not re.fullmatch(r"\d{1,2}", value):
+        raise HTTPException(400, "話者の人数が不正です")
+    n = int(value)
+    if not 1 <= n <= MAX_NUM_SPEAKERS:
+        raise HTTPException(400, f"話者の人数は1〜{MAX_NUM_SPEAKERS}で指定してください")
+    return n
+
+
 @app.post("/api/jobs")
 async def create_job(
     file: UploadFile,
     language: str = "",
     vocabulary: str = Form(""),
     context: str = Form(""),
-    num_speakers: str = Form(""),
+    min_speakers: str = Form(""),
+    max_speakers: str = Form(""),
     user: auth.User = Depends(auth.get_current_user),
 ) -> dict:
     """ファイルを受け取ってジョブを作成し、キューに積んで即座に ID を返す。
 
     処理自体は非同期(jobs.py のワーカー)で行われるため、クライアントは
     返された ID で GET /api/jobs/{id} をポーリングして進捗を追う。
-    language はクエリ、vocabulary / context / num_speakers はフォーム項目で受け取る。
-    num_speakers(話者の人数)は任意で、指定すると話者分離のクラスタ数が固定される。
+    language はクエリ、それ以外はフォーム項目で受け取る。
+    min_speakers / max_speakers(話者の人数の幅)は任意で、片方だけでもよい。
+    参加者全員が発話するとは限らないため幅で指定できる(同数なら固定)。
     """
     lang = language.strip() or None
     if lang and not re.fullmatch(r"[a-z]{2,3}", lang):
         raise HTTPException(400, "言語コードが不正です")
     if len(vocabulary) > MAX_PROMPT_CHARS or len(context) > MAX_PROMPT_CHARS:
         raise HTTPException(400, f"用語リスト・コンテキストは{MAX_PROMPT_CHARS}文字以内にしてください")
-    speakers: int | None = None
-    if num_speakers.strip():
-        if not re.fullmatch(r"\d{1,2}", num_speakers.strip()):
-            raise HTTPException(400, "話者の人数が不正です")
-        speakers = int(num_speakers)
-        if not 1 <= speakers <= MAX_NUM_SPEAKERS:
-            raise HTTPException(400, f"話者の人数は1〜{MAX_NUM_SPEAKERS}で指定してください")
+    speakers_min = _parse_num_speakers(min_speakers)
+    speakers_max = _parse_num_speakers(max_speakers)
+    if speakers_min is not None and speakers_max is not None and speakers_min > speakers_max:
+        raise HTTPException(400, "話者の人数は最小 ≦ 最大で指定してください")
 
     job_id = db.create_job(
         file.filename or "unnamed",
         lang,
         vocabulary=vocabulary.strip() or None,
         context=context.strip() or None,
-        num_speakers=speakers,
+        min_speakers=speakers_min,
+        max_speakers=speakers_max,
     )
     dest = jobs.upload_path(job_id)
     size = 0

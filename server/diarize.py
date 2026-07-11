@@ -139,10 +139,10 @@ def _segmentation_model_path() -> str:
     )
 
 
-def _diarizer_config(num_speakers: int | None):
+def _diarizer_config(num_clusters: int | None):
     """一括話者分離の設定を組み立てる。
 
-    num_speakers を指定するとクラスタ数を固定し(人数既知の会議で頑健)、
+    num_clusters を指定するとクラスタ数を固定し(人数既知の会議で頑健)、
     未指定なら DIARIZATION_CLUSTER_THRESHOLD で自動推定する。
     """
     import sherpa_onnx
@@ -158,7 +158,7 @@ def _diarizer_config(num_speakers: int | None):
             model=_model_path(), num_threads=2
         ),
         clustering=sherpa_onnx.FastClusteringConfig(
-            num_clusters=num_speakers or -1,
+            num_clusters=num_clusters or -1,
             threshold=config.DIARIZATION_CLUSTER_THRESHOLD,
         ),
     )
@@ -189,10 +189,16 @@ def offline_available() -> bool:
 
 def diarize_offline(
     audio: np.ndarray,
-    num_speakers: int | None = None,
+    min_speakers: int | None = None,
+    max_speakers: int | None = None,
     should_abort: Callable[[], bool] | None = None,
 ) -> list[tuple[float, float, int]]:
     """音声全体(float32 mono 16kHz)に一括話者分離をかけて話者区間を返す。
+
+    話者の人数は最小〜最大の幅で指定できる(参加者全員が発話するとは
+    限らないため)。同数ならクラスタ数を固定して1回で処理し、幅がある
+    場合はまず自動推定し、結果が範囲を外れたときだけ近い方の境界値に
+    クラスタ数を固定してやり直す(その場合のみ処理時間が約2倍になる)。
 
     戻り値は (start, end, 話者ID) のリスト(開始時刻順)。話者 ID は 0 始まりの
     生のクラスタ番号で、「話者N」への振り直しは map_speakers が行う。
@@ -206,11 +212,22 @@ def diarize_offline(
     def callback(_done: int, _total: int) -> int:
         return 1 if should_abort is not None and should_abort() else 0
 
-    with _offline_lock:
+    def run(num_clusters: int | None) -> list[tuple[float, float, int]]:
         # クラスタリング設定(人数指定)だけを差し替える。モデルは再ロードされない
-        diarizer.set_config(_diarizer_config(num_speakers))
+        diarizer.set_config(_diarizer_config(num_clusters))
         result = diarizer.process(audio, callback=callback)
-    return [(s.start, s.end, s.speaker) for s in result.sort_by_start_time()]
+        return [(s.start, s.end, s.speaker) for s in result.sort_by_start_time()]
+
+    fixed = min_speakers if min_speakers is not None and min_speakers == max_speakers else None
+    with _offline_lock:
+        turns = run(fixed)
+        if fixed is None and turns:
+            found = len({spk for _, _, spk in turns})
+            if max_speakers is not None and found > max_speakers:
+                turns = run(max_speakers)
+            elif min_speakers is not None and found < min_speakers:
+                turns = run(min_speakers)
+    return turns
 
 
 def map_speakers(

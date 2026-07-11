@@ -135,21 +135,21 @@ class TestRediarize:
         monkeypatch.setattr(transcriber, "transcribe_file", fake_transcribe)
 
     def test_完了時に一括話者分離で話者が振り直される(self, fresh_db, monkeypatch):
-        job_id = db.create_job("a.mp3", None, num_speakers=2)
+        job_id = db.create_job("a.mp3", None, min_speakers=2, max_speakers=4)
         jobs.upload_path(job_id).write_bytes(b"dummy audio")
         self._setup(monkeypatch)
 
         captured = {}
 
-        def fake_offline(audio, num_speakers=None, should_abort=None):
-            captured["num_speakers"] = num_speakers
+        def fake_offline(audio, min_speakers=None, max_speakers=None, should_abort=None):
+            captured["range"] = (min_speakers, max_speakers)
             return [(0.0, 2.0, 0), (2.0, 4.0, 1)]
 
         monkeypatch.setattr(jobs.diarize, "diarize_offline", fake_offline)
         jobs._process_job(job_id)
 
         assert db.get_job(job_id)["status"] == "done"
-        assert captured["num_speakers"] == 2  # 申告した人数がクラスタ数として渡る
+        assert captured["range"] == (2, 4)  # 申告した人数の幅が渡る
         # 逐次では両方「話者1」だったのが、一括の結果で 1 / 2 に分かれる
         assert [s["speaker"] for s in db.get_segments(job_id)] == [1, 2]
 
@@ -160,7 +160,7 @@ class TestRediarize:
         jobs.upload_path(job_id).write_bytes(b"dummy audio")
         self._setup(monkeypatch)
 
-        def fail_offline(audio, num_speakers=None, should_abort=None):
+        def fail_offline(audio, min_speakers=None, max_speakers=None, should_abort=None):
             raise RuntimeError("モデルが壊れている")
 
         monkeypatch.setattr(jobs.diarize, "diarize_offline", fail_offline)
@@ -176,7 +176,7 @@ class TestRediarize:
         monkeypatch.setattr(
             jobs.diarize,
             "diarize_offline",
-            lambda audio, num_speakers=None, should_abort=None: [],
+            lambda audio, min_speakers=None, max_speakers=None, should_abort=None: [],
         )
         jobs._process_job(job_id)
 

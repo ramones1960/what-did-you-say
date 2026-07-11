@@ -31,7 +31,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     vocabulary  TEXT,                    -- 用語リスト (hotwords)
     context     TEXT,                    -- 前提コンテキスト (initial_prompt)
     speaker_names TEXT,                  -- 話者番号→氏名の JSON マップ
-    num_speakers INTEGER,                -- 話者の人数(利用者申告、未指定は NULL)
+    min_speakers INTEGER,                -- 話者の人数の下限(利用者申告、未指定は NULL)
+    max_speakers INTEGER,                -- 話者の人数の上限(同上。下限と同数なら固定)
     duration    REAL,                    -- 音声全体の長さ(秒)
     progress    REAL NOT NULL DEFAULT 0, -- 0.0〜1.0
     created_at  REAL NOT NULL
@@ -79,7 +80,8 @@ def init_db() -> None:
             ("jobs", "vocabulary", "TEXT"),
             ("jobs", "context", "TEXT"),
             ("jobs", "speaker_names", "TEXT"),
-            ("jobs", "num_speakers", "INTEGER"),
+            ("jobs", "min_speakers", "INTEGER"),
+            ("jobs", "max_speakers", "INTEGER"),
             ("segments", "speaker", "INTEGER"),
         ):
             try:
@@ -93,15 +95,26 @@ def create_job(
     language: str | None,
     vocabulary: str | None = None,
     context: str | None = None,
-    num_speakers: int | None = None,
+    min_speakers: int | None = None,
+    max_speakers: int | None = None,
 ) -> str:
     """queued 状態のジョブを作成してジョブ ID を返す。"""
     job_id = uuid.uuid4().hex
     with _conn() as conn:
         conn.execute(
-            "INSERT INTO jobs (id, filename, status, language, vocabulary, context, num_speakers, created_at)"
-            " VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)",
-            (job_id, filename, language, vocabulary, context, num_speakers, time.time()),
+            "INSERT INTO jobs (id, filename, status, language, vocabulary, context,"
+            " min_speakers, max_speakers, created_at)"
+            " VALUES (?, ?, 'queued', ?, ?, ?, ?, ?, ?)",
+            (
+                job_id,
+                filename,
+                language,
+                vocabulary,
+                context,
+                min_speakers,
+                max_speakers,
+                time.time(),
+            ),
         )
     return job_id
 

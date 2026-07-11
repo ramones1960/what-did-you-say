@@ -54,27 +54,46 @@ class TestCreateJob:
         )
         assert res.status_code == 400
 
-    def test_話者の人数を指定できる(self, client):
+    def test_話者の人数を幅で指定できる(self, client):
         res = client.post(
             "/api/jobs",
             files={"file": ("a.mp3", b"x")},
-            data={"num_speakers": "3"},
+            data={"min_speakers": "2", "max_speakers": "5"},
         )
         assert res.status_code == 200
-        assert db.get_job(res.json()["id"])["num_speakers"] == 3
+        job = db.get_job(res.json()["id"])
+        assert (job["min_speakers"], job["max_speakers"]) == (2, 5)
+
+    def test_話者の人数は片方だけでもよい(self, client):
+        res = client.post(
+            "/api/jobs",
+            files={"file": ("a.mp3", b"x")},
+            data={"max_speakers": "4"},
+        )
+        job = db.get_job(res.json()["id"])
+        assert (job["min_speakers"], job["max_speakers"]) == (None, 4)
 
     def test_話者の人数は未指定ならNULL(self, client):
         res = client.post("/api/jobs", files={"file": ("a.mp3", b"x")})
-        assert db.get_job(res.json()["id"])["num_speakers"] is None
+        job = db.get_job(res.json()["id"])
+        assert (job["min_speakers"], job["max_speakers"]) == (None, None)
 
     def test_話者の人数の検証(self, client):
         for bad in ("0", "17", "abc", "-1", "1.5"):
             res = client.post(
                 "/api/jobs",
                 files={"file": ("a.mp3", b"x")},
-                data={"num_speakers": bad},
+                data={"max_speakers": bad},
             )
             assert res.status_code == 400, bad
+
+    def test_話者の人数は最小が最大を超えると拒否(self, client):
+        res = client.post(
+            "/api/jobs",
+            files={"file": ("a.mp3", b"x")},
+            data={"min_speakers": "5", "max_speakers": "2"},
+        )
+        assert res.status_code == 400
 
     def test_空ファイルは拒否(self, client):
         res = client.post("/api/jobs", files={"file": ("a.mp3", b"")})
